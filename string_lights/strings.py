@@ -7,7 +7,8 @@ NUM_STRINGS = 6
 STRING_SPACING = SQUARE_SIZE * 0.83
 STRING0_OFFSET = np.array([CHARUCO_BOARD_WIDTH * 3, SQUARE_SIZE * 0.04, 0], dtype=np.float64)
 STRING_LENGTH = CHARUCO_BOARD_WIDTH * 6.8
-STRING_COLOR = (0, 255, 0)  # lime green
+STRING_COLOR = (200, 220, 255)  # warm white (BGR)
+STRING_CORE_COLOR = (255, 255, 255)
 STRING_ALPHA = 0.8
 FADE_DURATION = 2.0  # seconds
 
@@ -58,8 +59,30 @@ def draw_strings(frames: list[np.ndarray],
                     alpha = STRING_ALPHA * (1.0 - elapsed / fade_frames)
                 to_draw.append((i, alpha))
 
+        # Accumulate glow layers across all strings, blur once per frame
+        outer_bloom = np.zeros_like(frame)
+        inner_glow = np.zeros_like(frame)
+        endpoints = []
         for i, alpha in to_draw:
-            overlay = frame.copy()
             a, b = project_string(i, rvec, tvec)
-            cv2.line(overlay, a, b, STRING_COLOR, 4, cv2.LINE_AA)
-            cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+            endpoints.append((a, b, alpha))
+            scaled_color = tuple(int(c * alpha) for c in STRING_COLOR)
+            cv2.line(outer_bloom, a, b, scaled_color, 22, cv2.LINE_AA)
+            cv2.line(inner_glow, a, b, scaled_color, 8, cv2.LINE_AA)
+
+        outer_bloom = cv2.GaussianBlur(outer_bloom, (0, 0), sigmaX=18)
+        inner_glow = cv2.GaussianBlur(inner_glow, (0, 0), sigmaX=5)
+
+        # Additive blend: glow lights up the scene
+        frame[:] = np.clip(
+            frame.astype(np.int32)
+            + (outer_bloom.astype(np.int32) * 0.25).astype(np.int32)
+            + (inner_glow.astype(np.int32) * 0.7).astype(np.int32),
+            0, 255
+        ).astype(np.uint8)
+
+        # White core on top — blows out toward white like a real light source
+        for a, b, alpha in endpoints:
+            core = frame.copy()
+            cv2.line(core, a, b, STRING_CORE_COLOR, 2, cv2.LINE_AA)
+            cv2.addWeighted(core, alpha, frame, 1 - alpha, 0, frame)
