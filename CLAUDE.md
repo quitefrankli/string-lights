@@ -12,8 +12,4 @@
 
 * Minimise comments/docstrings, only add comments when they are truly helpful i.e. deep functions, surprsing logic. Don't add any readme.md files or other documentation files unless explicitly asked to.
 
-* Do test driven development, when unit tests are appropriate, first write the test that defines the expected behavior, then implement the code to pass the test.
-
-* DO NOT write superfluous tests, add 1-2 USEFUL tests only per feature
-
 * start every new session with "CLAUDE.md read!"
