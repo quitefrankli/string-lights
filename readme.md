@@ -1,10 +1,10 @@
-# guitar-strings
+# string-lights
 
 A tool for processing video frames of a guitar with an ArUco marker board to detect board pose and apply visual overlays.
 
 ## Usage
 
-`uv run guitar-strings $INPUT_MP4`
+`uv run string-lights $INPUT_MP4`
 
 ## Configuration
 

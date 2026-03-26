@@ -28,8 +28,9 @@ def estimate_pose(gray, detector, id_to_3d, K):
 
 
 def is_pose_valid(rvec, tvec, prev_rvec, prev_tvec):
-    return True
-
+    # return True
+    r = np.degrees(rvec.flatten())
+    return 18 < r[0] < 22
     R, _ = cv2.Rodrigues(rvec)
     if (R @ np.array([0.0, 0.0, 1.0]))[2] > 0.0:
         return False

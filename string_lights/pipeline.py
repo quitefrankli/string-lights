@@ -33,6 +33,8 @@ def pass2_resolve_poses(raw_poses):
     for rvec, tvec in raw_poses:
         if rvec is not None and is_pose_valid(rvec, tvec, last_rvec, last_tvec):
             last_rvec, last_tvec = rvec, tvec
+        else:
+            last_rvec, last_tvec = None, None
         resolved.append((last_rvec, last_tvec))
     return resolved
 
@@ -51,9 +53,20 @@ def pass3_write_output(cap, resolved_poses, K, output_path, fps, w, h):
             break
         if rvec is not None:
             cv2.drawFrameAxes(frame, K, dist, rvec, tvec, SQUARE_SIZE * 6)
+        #     R, _ = cv2.Rodrigues(rvec)
+        #     sy = np.sqrt(R[0,0]**2 + R[1,0]**2)
+        #     if sy > 1e-6:
+        #         roll  = np.degrees(np.arctan2( R[2,1], R[2,2]))
+        #         pitch = np.degrees(np.arctan2(-R[2,0], sy))
+        #         yaw   = np.degrees(np.arctan2( R[1,0], R[0,0]))
+        #     else:  # gimbal lock
+        #         roll  = np.degrees(np.arctan2(-R[1,2], R[1,1]))
+        #         pitch = np.degrees(np.arctan2(-R[2,0], sy))
+        #         yaw   = 0.0
+        #     print(f"  frame {frame_idx:4d}  roll {roll:7.2f}°  pitch {pitch:7.2f}°  yaw {yaw:7.2f}°")
+        # else:
+        #     print(f"  frame {frame_idx:4d}  no pose")
         out.write(frame)
-        if (frame_idx + 1) % 60 == 0:
-            print(f"  pass3  {frame_idx+1}/{total}  written")
 
     out.release()
 
@@ -64,7 +77,7 @@ def process_video(input_path: str, output_path: str):
     h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps   = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    total = 60  # dev limit
+    # total = 60  # dev limit
 
     K = camera_matrix(w, h)
     adict, id_to_3d = build_board()
