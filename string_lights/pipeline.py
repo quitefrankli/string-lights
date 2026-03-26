@@ -4,6 +4,7 @@ import numpy as np
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
 from .config import POSE_RESOLUTION, PoseResolution
 from .pose import estimate_pose, is_pose_valid, Pose
+from .strings import draw_strings
 
 
 def pass1_raw_poses(cap: cv2.VideoCapture, total: int, detector: cv2.aruco.ArucoDetector, id_to_3d: dict[int, np.ndarray], K: np.ndarray) -> list[Pose]:
@@ -70,7 +71,13 @@ def pass2_resolve_poses(raw_poses: list[Pose], mode: PoseResolution = POSE_RESOL
     return resolved
 
 
-def pass3_write_output(cap: cv2.VideoCapture, resolved_poses: list[Pose], K: np.ndarray, output_path: str, fps: float, w: int, h: int) -> None:
+def pass3_write_output(cap: cv2.VideoCapture, 
+                       resolved_poses: list[Pose], 
+                       K: np.ndarray, 
+                       output_path: str, 
+                       fps: float, 
+                       w: int, 
+                       h: int) -> None:
     """Seek back to the start and write annotated frames."""
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -84,6 +91,7 @@ def pass3_write_output(cap: cv2.VideoCapture, resolved_poses: list[Pose], K: np.
             break
         if rvec is not None:
             cv2.drawFrameAxes(frame, K, dist, rvec, tvec, SQUARE_SIZE * 6)
+            draw_strings(frame, rvec, tvec, K)
         #     R, _ = cv2.Rodrigues(rvec)
         #     sy = np.sqrt(R[0,0]**2 + R[1,0]**2)
         #     if sy > 1e-6:

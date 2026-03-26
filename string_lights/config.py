@@ -6,6 +6,7 @@ BOARD_COLS  = 6
 BOARD_ROWS  = 6
 SQUARE_SIZE = 0.012   # metres
 MARKER_SIZE = 0.009   # metres
+CHARUCO_BOARD_WIDTH = SQUARE_SIZE * BOARD_COLS
 ARUCO_DICT  = cv2.aruco.DICT_5X5_50
 
 # Camera model
