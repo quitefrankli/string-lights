@@ -1,10 +1,13 @@
 import cv2
 import numpy as np
+import subprocess
+import tempfile
 
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
 from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, MASK_FRAME_SKIP
 from .masking import resolve_device, load_models, get_mask
 from .pose import estimate_pose, is_pose_valid, Pose
+from .audio import get_strings_to_highlight
 from .strings import draw_strings
 
 
@@ -20,7 +23,7 @@ def pass1_raw_poses(cap: cv2.VideoCapture, total: int, detector: cv2.aruco.Aruco
         raw.append(estimate_pose(gray, detector, id_to_3d, K))
         if (i + 1) % 60 == 0:
             found = sum(1 for r, t in raw if r is not None)
-            print(f"  pass1  {i+1}/{total}  raw detections: {found}")
+            print(f"  pass1 {i+1}/{total} raw detections: {found}")
     return raw
 
 
@@ -95,7 +98,7 @@ def pass3_hand_masks(cap: cv2.VideoCapture, total: int, w: int, h: int) -> list[
             )
         masks.append(current_mask)
         if (i + 1) % 60 == 0:
-            print(f"  pass3{i+1}/{total}  hand masks")
+            print(f"  pass3 {i+1}/{total}  hand masks")
     return masks
 
 
@@ -109,42 +112,35 @@ def pass4_write_output(cap: cv2.VideoCapture,
                        h: int) -> None:
     """Seek back to the start and write annotated frames."""
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out    = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
-    dist   = np.zeros(5, dtype=np.float64)
-    total  = len(resolved_poses)
+    total = len(resolved_poses)
 
-    for frame_idx, (rvec, tvec) in enumerate(resolved_poses):
+    frames = []
+    originals = []
+    for _ in range(total):
         ret, frame = cap.read()
         if not ret:
             break
-        if rvec is not None:
-            original = frame.copy()
-            cv2.drawFrameAxes(frame, K, dist, rvec, tvec, SQUARE_SIZE * 6)
-            draw_strings(frame, rvec, tvec, K)
-            mask = hand_masks[frame_idx]
-            if mask.any():
-                mask_bool = mask.astype(bool)
-                frame[mask_bool] = original[mask_bool]
-        #     R, _ = cv2.Rodrigues(rvec)
-        #     sy = np.sqrt(R[0,0]**2 + R[1,0]**2)
-        #     if sy > 1e-6:
-        #         roll  = np.degrees(np.arctan2( R[2,1], R[2,2]))
-        #         pitch = np.degrees(np.arctan2(-R[2,0], sy))
-        #         yaw   = np.degrees(np.arctan2( R[1,0], R[0,0]))
-        #     else:  # gimbal lock
-        #         roll  = np.degrees(np.arctan2(-R[1,2], R[1,1]))
-        #         pitch = np.degrees(np.arctan2(-R[2,0], sy))
-        #         yaw   = 0.0
-        #     print(f"  frame {frame_idx:4d}  roll {roll:7.2f}°  pitch {pitch:7.2f}°  yaw {yaw:7.2f}°")
-        # else:
-        #     print(f"  frame {frame_idx:4d}  no pose")
-        out.write(frame)
+        originals.append(frame.copy())
+        frames.append(frame)
 
+    strings = get_strings_to_highlight(len(frames), fps)
+    draw_strings(frames, resolved_poses, strings, K, fps)
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out    = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
+    for frame_idx, frame in enumerate(frames):
+        mask = hand_masks[frame_idx]
+        if mask.any():
+            mask_bool = mask.astype(bool)
+            frame[mask_bool] = originals[frame_idx][mask_bool]
+        out.write(frame)
     out.release()
 
 
-def process_video(input_path: str, output_path: str, frames: int | None = None) -> None:
+def process_video(input_path: str, 
+                  output_path: str, 
+                  frames: int | None = None, 
+                  disable_masking: bool = False) -> None:
     cap   = cv2.VideoCapture(input_path)
     w     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -165,10 +161,21 @@ def process_video(input_path: str, output_path: str, frames: int | None = None) 
     detected = sum(1 for r, _ in resolved_poses if r is not None)
     print(f"  pass2 complete: stable pose in {detected}/{total} frames")
 
-    hand_masks = pass3_hand_masks(cap, total, w, h)
-    print(f"  pass3complete: hand masks for {total} frames")
+    if disable_masking:
+        hand_masks = [np.zeros((h, w), dtype=np.uint8) for _ in range(total)]
+    else:
+        hand_masks = pass3_hand_masks(cap, total, w, h)
+    print(f"  pass3 complete: hand masks for {total} frames")
 
-    pass4_write_output(cap, resolved_poses, hand_masks, K, output_path, fps, w, h)
+    with tempfile.NamedTemporaryFile(suffix=".mp4") as tmp:
+        tmp_path = tmp.name
+        pass4_write_output(cap, resolved_poses, hand_masks, K, tmp_path, fps, w, h)
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", tmp_path, "-i", input_path,
+             "-map", "0:v:0", "-map", "1:a?",
+             "-c:v", "copy", "-c:a", "copy", "-shortest", output_path],
+            check=True, capture_output=True,
+        )
     cap.release()
 
     print(f"Done.  Board pose found in {detected}/{total} frames ({100*detected//total}%).")
