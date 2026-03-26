@@ -2,7 +2,8 @@ import cv2
 import numpy as np
 
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
-from .config import POSE_RESOLUTION, PoseResolution
+from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, MASK_FRAME_SKIP
+from .masking import resolve_device, load_models, get_mask
 from .pose import estimate_pose, is_pose_valid, Pose
 from .strings import draw_strings
 
@@ -71,12 +72,40 @@ def pass2_resolve_poses(raw_poses: list[Pose], mode: PoseResolution = POSE_RESOL
     return resolved
 
 
-def pass3_write_output(cap: cv2.VideoCapture, 
-                       resolved_poses: list[Pose], 
-                       K: np.ndarray, 
-                       output_path: str, 
-                       fps: float, 
-                       w: int, 
+def pass3_hand_masks(cap: cv2.VideoCapture, total: int, w: int, h: int) -> list[np.ndarray]:
+    """Generate per-frame hand masks using GroundingDINO + SAM."""
+    device = resolve_device()
+    models = load_models(device)
+    gd_processor, gd_model, sam_processor, sam_model = models
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    masks: list[np.ndarray] = []
+    current_mask = np.zeros((h, w), dtype=np.uint8)
+
+    for i in range(total):
+        ret, frame = cap.read()
+        if not ret:
+            masks.append(current_mask)
+            continue
+        if i % MASK_FRAME_SKIP == 0:
+            current_mask = get_mask(
+                frame, MASK_PROMPT,
+                gd_processor, gd_model, sam_processor, sam_model,
+                device, BOX_THRESHOLD, TEXT_THRESHOLD,
+            )
+        masks.append(current_mask)
+        if (i + 1) % 60 == 0:
+            print(f"  pass3{i+1}/{total}  hand masks")
+    return masks
+
+
+def pass4_write_output(cap: cv2.VideoCapture,
+                       resolved_poses: list[Pose],
+                       hand_masks: list[np.ndarray],
+                       K: np.ndarray,
+                       output_path: str,
+                       fps: float,
+                       w: int,
                        h: int) -> None:
     """Seek back to the start and write annotated frames."""
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -90,8 +119,13 @@ def pass3_write_output(cap: cv2.VideoCapture,
         if not ret:
             break
         if rvec is not None:
+            original = frame.copy()
             cv2.drawFrameAxes(frame, K, dist, rvec, tvec, SQUARE_SIZE * 6)
             draw_strings(frame, rvec, tvec, K)
+            mask = hand_masks[frame_idx]
+            if mask.any():
+                mask_bool = mask.astype(bool)
+                frame[mask_bool] = original[mask_bool]
         #     R, _ = cv2.Rodrigues(rvec)
         #     sy = np.sqrt(R[0,0]**2 + R[1,0]**2)
         #     if sy > 1e-6:
@@ -110,14 +144,14 @@ def pass3_write_output(cap: cv2.VideoCapture,
     out.release()
 
 
-def process_video(input_path: str, output_path: str, duration: int | None = None) -> None:
+def process_video(input_path: str, output_path: str, frames: int | None = None) -> None:
     cap   = cv2.VideoCapture(input_path)
     w     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps   = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if duration is not None:
-        total = min(total, duration)
+    if frames is not None:
+        total = min(total, frames)
 
     K = camera_matrix(w, h)
     adict, id_to_3d = build_board()
@@ -131,7 +165,10 @@ def process_video(input_path: str, output_path: str, duration: int | None = None
     detected = sum(1 for r, _ in resolved_poses if r is not None)
     print(f"  pass2 complete: stable pose in {detected}/{total} frames")
 
-    pass3_write_output(cap, resolved_poses, K, output_path, fps, w, h)
+    hand_masks = pass3_hand_masks(cap, total, w, h)
+    print(f"  pass3complete: hand masks for {total} frames")
+
+    pass4_write_output(cap, resolved_poses, hand_masks, K, output_path, fps, w, h)
     cap.release()
 
     print(f"Done.  Board pose found in {detected}/{total} frames ({100*detected//total}%).")

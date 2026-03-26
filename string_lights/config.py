@@ -23,3 +23,11 @@ class PoseResolution(Enum):
     INTERPOLATE = "interpolate"  # linearly interpolate between surrounding valid poses
 
 POSE_RESOLUTION = PoseResolution.HOLD
+
+# Hand masking (SAM)
+GD_MODEL_ID = "IDEA-Research/grounding-dino-tiny"
+SAM_MODEL_ID = "facebook/sam-vit-base"
+MASK_PROMPT = "hands"
+BOX_THRESHOLD = 0.35
+TEXT_THRESHOLD = 0.25
+MASK_FRAME_SKIP = 1  # reuse mask for N frames
