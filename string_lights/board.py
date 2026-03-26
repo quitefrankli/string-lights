@@ -1,16 +1,10 @@
 import cv2
 import numpy as np
 
-BOARD_COLS  = 6
-BOARD_ROWS  = 6
-SQUARE_SIZE = 0.012   # metres
-MARKER_SIZE = 0.009   # metres
-ARUCO_DICT  = cv2.aruco.DICT_5X5_50
-
-FOCAL_PX_AT_1920 = 1800.0
+from .config import BOARD_COLS, BOARD_ROWS, SQUARE_SIZE, MARKER_SIZE, ARUCO_DICT, FOCAL_PX_AT_1920
 
 
-def build_board():
+def build_board() -> tuple[cv2.aruco.Dictionary, dict[int, np.ndarray]]:
     adict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
     board = cv2.aruco.CharucoBoard(
         (BOARD_COLS, BOARD_ROWS), SQUARE_SIZE, MARKER_SIZE, adict
@@ -22,7 +16,7 @@ def build_board():
     return adict, id_to_3d
 
 
-def make_detector(adict):
+def make_detector(adict: cv2.aruco.Dictionary) -> cv2.aruco.ArucoDetector:
     params = cv2.aruco.DetectorParameters()
     params.adaptiveThreshWinSizeMin  = 3
     params.adaptiveThreshWinSizeMax  = 53
@@ -32,7 +26,7 @@ def make_detector(adict):
     return cv2.aruco.ArucoDetector(adict, params)
 
 
-def camera_matrix(w, h):
+def camera_matrix(w: int, h: int) -> np.ndarray:
     f = FOCAL_PX_AT_1920 * w / 1920.0
     return np.array([[f, 0, w / 2],
                      [0, f, h / 2],

@@ -6,7 +6,8 @@ from .pipeline import process_video
 
 @click.command()
 @click.argument("filename")
-def main(filename: str):
+@click.option("--duration", type=int, default=None, help="Max number of frames to process.")
+def main(filename: str, duration: int | None) -> None:
     input_dir = Path("data/input")
 
     if Path(filename).suffix:
@@ -26,7 +27,7 @@ def main(filename: str):
     stem = input_path.stem
     output_path = Path("data/output") / f"{stem}.mp4"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    process_video(str(input_path), str(output_path))
+    process_video(str(input_path), str(output_path), duration=duration)
 
 
 if __name__ == "__main__":

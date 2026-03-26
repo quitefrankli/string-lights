@@ -1,11 +1,12 @@
 import cv2
 import numpy as np
 
-MAX_ROTATION_JUMP    = 0.3    # radians per frame
-MAX_TRANSLATION_JUMP = 0.05   # metres per frame
+from .config import MAX_ROTATION_JUMP, MAX_TRANSLATION_JUMP
+
+Pose = tuple[np.ndarray | None, np.ndarray | None]
 
 
-def estimate_pose(gray, detector, id_to_3d, K):
+def estimate_pose(gray: np.ndarray, detector: cv2.aruco.ArucoDetector, id_to_3d: dict[int, np.ndarray], K: np.ndarray) -> Pose:
     corners, ids, _ = detector.detectMarkers(gray)
     if ids is None or len(ids) < 4:
         return None, None
@@ -27,7 +28,7 @@ def estimate_pose(gray, detector, id_to_3d, K):
     return (rvec, tvec) if ok else (None, None)
 
 
-def is_pose_valid(rvec, tvec, prev_rvec, prev_tvec):
+def is_pose_valid(rvec: np.ndarray, tvec: np.ndarray, prev_rvec: np.ndarray | None, prev_tvec: np.ndarray | None) -> bool:
     # return True
     r = np.degrees(rvec.flatten())
     return 18 < r[0] < 22

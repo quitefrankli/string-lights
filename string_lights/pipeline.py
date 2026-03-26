@@ -2,10 +2,11 @@ import cv2
 import numpy as np
 
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
-from .pose import estimate_pose, is_pose_valid
+from .config import POSE_RESOLUTION, PoseResolution
+from .pose import estimate_pose, is_pose_valid, Pose
 
 
-def pass1_raw_poses(cap, total, detector, id_to_3d, K):
+def pass1_raw_poses(cap: cv2.VideoCapture, total: int, detector: cv2.aruco.ArucoDetector, id_to_3d: dict[int, np.ndarray], K: np.ndarray) -> list[Pose]:
     """Read every frame and return raw PnP estimates; (None, None) when detection fails."""
     raw = []
     for i in range(total):
@@ -21,25 +22,55 @@ def pass1_raw_poses(cap, total, detector, id_to_3d, K):
     return raw
 
 
-def pass2_resolve_poses(raw_poses):
-    """Derive a stable pose for every frame from the raw estimates.
+def pass2_resolve_poses(raw_poses: list[Pose], mode: PoseResolution = POSE_RESOLUTION) -> list[Pose]:
+    """Derive a stable pose for every frame from the raw estimates."""
+    n = len(raw_poses)
 
-    Strategy: forward pass that accepts a new raw pose only when it passes
-    the jump/orientation validity check, then holds the last accepted pose
-    for frames where detection failed or the pose was rejected.
-    """
-    resolved = []
+    # Forward pass: accept poses that pass validity check
+    accepted: list[Pose] = []
     last_rvec, last_tvec = None, None
     for rvec, tvec in raw_poses:
         if rvec is not None and is_pose_valid(rvec, tvec, last_rvec, last_tvec):
             last_rvec, last_tvec = rvec, tvec
+            accepted.append((rvec, tvec))
         else:
             last_rvec, last_tvec = None, None
-        resolved.append((last_rvec, last_tvec))
+            accepted.append((None, None))
+
+    if mode == PoseResolution.OMIT:
+        return accepted
+
+    if mode == PoseResolution.HOLD:
+        resolved: list[Pose] = []
+        last: Pose = (None, None)
+        for pose in accepted:
+            if pose[0] is not None:
+                last = pose
+            resolved.append(last)
+        return resolved
+
+    # INTERPOLATE: fill gaps between valid frames
+    resolved = list(accepted)
+    i = 0
+    while i < n:
+        if resolved[i][0] is not None:
+            i += 1
+            continue
+        prev_idx = next((j for j in range(i - 1, -1, -1) if resolved[j][0] is not None), None)
+        next_idx = next((j for j in range(i, n) if resolved[j][0] is not None), None)
+        gap_end  = (next_idx - 1) if next_idx is not None else n - 1
+        if prev_idx is not None and next_idx is not None:
+            r0, t0 = resolved[prev_idx]
+            r1, t1 = resolved[next_idx]
+            span = next_idx - prev_idx
+            for k in range(i, gap_end + 1):
+                alpha = (k - prev_idx) / span
+                resolved[k] = (r0 + alpha * (r1 - r0), t0 + alpha * (t1 - t0))
+        i = gap_end + 1
     return resolved
 
 
-def pass3_write_output(cap, resolved_poses, K, output_path, fps, w, h):
+def pass3_write_output(cap: cv2.VideoCapture, resolved_poses: list[Pose], K: np.ndarray, output_path: str, fps: float, w: int, h: int) -> None:
     """Seek back to the start and write annotated frames."""
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -71,13 +102,14 @@ def pass3_write_output(cap, resolved_poses, K, output_path, fps, w, h):
     out.release()
 
 
-def process_video(input_path: str, output_path: str):
+def process_video(input_path: str, output_path: str, duration: int | None = None) -> None:
     cap   = cv2.VideoCapture(input_path)
     w     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps   = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    # total = 60  # dev limit
+    if duration is not None:
+        total = min(total, duration)
 
     K = camera_matrix(w, h)
     adict, id_to_3d = build_board()
