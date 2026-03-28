@@ -106,6 +106,7 @@ def pass4_write_output(cap: cv2.VideoCapture,
                        resolved_poses: list[Pose],
                        hand_masks: list[np.ndarray],
                        K: np.ndarray,
+                       input_path: str,
                        output_path: str,
                        fps: float,
                        w: int,
@@ -123,7 +124,7 @@ def pass4_write_output(cap: cv2.VideoCapture,
         originals.append(frame.copy())
         frames.append(frame)
 
-    strings = get_strings_to_highlight(len(frames), fps)
+    strings = get_strings_to_highlight(input_path, len(frames), fps)
     draw_strings(frames, resolved_poses, strings, K, fps)
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -169,7 +170,7 @@ def process_video(input_path: str,
 
     with tempfile.NamedTemporaryFile(suffix=".mp4") as tmp:
         tmp_path = tmp.name
-        pass4_write_output(cap, resolved_poses, hand_masks, K, tmp_path, fps, w, h)
+        pass4_write_output(cap, resolved_poses, hand_masks, K, input_path, tmp_path, fps, w, h)
         subprocess.run(
             ["ffmpeg", "-y", "-i", tmp_path, "-i", input_path,
              "-map", "0:v:0", "-map", "1:a?",
