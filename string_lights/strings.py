@@ -59,30 +59,52 @@ def draw_strings(frames: list[np.ndarray],
                     alpha = STRING_ALPHA * (1.0 - elapsed / fade_frames)
                 to_draw.append((i, alpha))
 
-        # Accumulate glow layers across all strings, blur once per frame
-        outer_bloom = np.zeros_like(frame)
-        inner_glow = np.zeros_like(frame)
+        # Project all strings and find bounding box for ROI blur
+        h, w = frame.shape[:2]
         endpoints = []
+        xs, ys = [], []
         for i, alpha in to_draw:
             a, b = project_string(i, rvec, tvec)
             endpoints.append((a, b, alpha))
+            xs.extend((a[0], b[0]))
+            ys.extend((a[1], b[1]))
+
+        if not endpoints:
+            continue
+
+        # ROI with padding for blur kernel spread
+        pad = 18 * 4  # ~4 sigma for outer bloom
+        x0 = max(0, min(xs) - pad)
+        y0 = max(0, min(ys) - pad)
+        x1 = min(w, max(xs) + pad)
+        y1 = min(h, max(ys) + pad)
+        rh, rw = y1 - y0, x1 - x0
+
+        outer_bloom = np.zeros((rh, rw, 3), dtype=np.uint8)
+        inner_glow = np.zeros((rh, rw, 3), dtype=np.uint8)
+        for a, b, alpha in endpoints:
             scaled_color = tuple(int(c * alpha) for c in STRING_COLOR)
-            cv2.line(outer_bloom, a, b, scaled_color, 22, cv2.LINE_AA)
-            cv2.line(inner_glow, a, b, scaled_color, 8, cv2.LINE_AA)
+            a_r = (a[0] - x0, a[1] - y0)
+            b_r = (b[0] - x0, b[1] - y0)
+            cv2.line(outer_bloom, a_r, b_r, scaled_color, 22, cv2.LINE_AA)
+            cv2.line(inner_glow, a_r, b_r, scaled_color, 8, cv2.LINE_AA)
 
         outer_bloom = cv2.GaussianBlur(outer_bloom, (0, 0), sigmaX=18)
         inner_glow = cv2.GaussianBlur(inner_glow, (0, 0), sigmaX=5)
 
-        # Additive blend: glow lights up the scene
-        frame[:] = np.clip(
-            frame.astype(np.int32)
-            + (outer_bloom.astype(np.int32) * 0.25).astype(np.int32)
-            + (inner_glow.astype(np.int32) * 0.7).astype(np.int32),
-            0, 255
-        ).astype(np.uint8)
+        # Saturating uint8 add — no int32 intermediates
+        roi = frame[y0:y1, x0:x1]
+        scaled_outer = cv2.multiply(outer_bloom, np.array([0.25, 0.25, 0.25, 0], dtype=np.float64))
+        scaled_inner = cv2.multiply(inner_glow, np.array([0.7, 0.7, 0.7, 0], dtype=np.float64))
+        cv2.add(roi, scaled_outer.astype(np.uint8), dst=roi)
+        cv2.add(roi, scaled_inner.astype(np.uint8), dst=roi)
 
-        # White core on top — blows out toward white like a real light source
+        # White core — group by alpha to minimise frame copies
+        by_alpha: dict[float, list[tuple]] = {}
         for a, b, alpha in endpoints:
+            by_alpha.setdefault(round(alpha, 4), []).append((a, b))
+        for alpha, lines in by_alpha.items():
             core = frame.copy()
-            cv2.line(core, a, b, STRING_CORE_COLOR, 2, cv2.LINE_AA)
+            for a, b in lines:
+                cv2.line(core, a, b, STRING_CORE_COLOR, 2, cv2.LINE_AA)
             cv2.addWeighted(core, alpha, frame, 1 - alpha, 0, frame)
