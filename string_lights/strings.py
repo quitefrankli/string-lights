@@ -10,7 +10,7 @@ STRING_LENGTH = CHARUCO_BOARD_WIDTH * 6.8
 STRING_COLOR = (200, 220, 255)  # warm white (BGR)
 STRING_CORE_COLOR = (255, 255, 255)
 STRING_ALPHA = 0.8
-FADE_DURATION = 2.0  # seconds
+FADE_DURATION = 0.5  # seconds
 
 
 def draw_strings(frames: list[np.ndarray],

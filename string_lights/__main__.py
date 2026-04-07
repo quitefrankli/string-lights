@@ -4,11 +4,16 @@ from pathlib import Path
 from .pipeline import process_video
 
 
-@click.command()
+@click.group()
+def main() -> None:
+    pass
+
+
+@main.command()
 @click.argument("filename")
 @click.option("--frames", type=int, default=None, help="Max number of frames to process.")
 @click.option("--disable-masking", is_flag=True, default=False, help="Skip hand masking (faster for dev testing).")
-def main(filename: str, frames: int | None, disable_masking: bool) -> None:
+def run(filename: str, frames: int | None, disable_masking: bool) -> None:
     input_dir = Path("data/input")
 
     if Path(filename).suffix:
@@ -29,6 +34,17 @@ def main(filename: str, frames: int | None, disable_masking: bool) -> None:
     output_path = Path("data/output") / f"{stem}.mp4"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     process_video(str(input_path), str(output_path), frames=frames, disable_masking=disable_masking)
+
+
+@main.command()
+@click.option("--port", type=int, default=8080, show_default=True)
+def editor(port: int) -> None:
+    import webbrowser
+    from .editor import create_app
+
+    app = create_app()
+    webbrowser.open(f"http://localhost:{port}")
+    app.run(host="localhost", port=port)
 
 
 if __name__ == "__main__":

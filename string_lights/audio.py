@@ -35,7 +35,7 @@ def get_strings_to_highlight(input_path: str, total_frames: int, video_fps: floa
     n_audio = len(tab)
     print(f"Loaded tab data from {npy_path}, {n_audio} audio frames, {total_frames} video frames")
 
-    tab = _clean_tab(tab)
+    # tab = _clean_tab(tab)
 
     strings: list[list[int]] = []
     for vi in range(total_frames):

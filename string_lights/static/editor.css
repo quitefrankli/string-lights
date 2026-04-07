@@ -1,0 +1,71 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: #fff; color: #222; font-family: monospace; font-size: 13px;
+  display: flex; flex-direction: column;
+}
+
+#toolbar {
+  display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+  padding: 10px 14px; background: #f0f0f0; border-bottom: 1px solid #ccc;
+}
+#toolbar label { color: #444; }
+#toolbar input[type=number], #toolbar input[type=text] {
+  background: #fff; border: 1px solid #bbb; color: #222;
+  padding: 4px 8px; width: 80px; border-radius: 4px;
+}
+#toolbar input[type=text] { width: 120px; }
+#toolbar button {
+  padding: 5px 14px; border-radius: 4px; border: none; cursor: pointer;
+  background: #e94560; color: #fff; font-weight: bold;
+}
+#toolbar button:hover { background: #c0304a; }
+#clear-btn { background: #888 !important; }
+#clear-btn:hover { background: #555 !important; }
+.hint { color: #999; font-size: 11px; }
+
+#grid-wrap {
+  display: flex;
+  flex: 1 1 0;
+  overflow: auto;
+  padding: 16px 0 16px 0;
+}
+
+#labels {
+  display: flex; flex-direction: column;
+  padding-top: 52px; /* 2 header rows × 26px */
+  flex-shrink: 0;
+}
+.string-label {
+  height: 56px; width: 52px;
+  display: flex; align-items: center; justify-content: flex-end;
+  padding-right: 10px; color: #555; font-size: 13px;
+  flex-shrink: 0; font-weight: bold;
+}
+
+#grid-inner { display: flex; flex-direction: column; }
+
+.header-row {
+  display: flex; height: 26px; flex-shrink: 0; align-items: flex-end;
+}
+.header-row.time-row { border-bottom: 2px solid #ccc; margin-bottom: 4px; }
+
+.hcell {
+  width: 20px; flex-shrink: 0; font-size: 9px; color: #aaa;
+  text-align: left; overflow: visible; white-space: nowrap;
+  padding-left: 2px;
+}
+.hcell.tick { color: #888; border-left: 1px solid #ccc; }
+.hcell.time-tick { color: #2277bb; border-left: 1px solid #99bbdd; }
+
+#rows { display: flex; flex-direction: column; }
+.row { display: flex; flex-direction: row; height: 56px; }
+
+.cell {
+  width: 20px; height: 56px; flex-shrink: 0;
+  border-right: 1px solid #ddd; border-bottom: 1px solid #ddd;
+  background: #f8f8f8;
+  cursor: pointer; user-select: none;
+}
+.cell.active { background: #3a7bd5; }
+.cell:hover { filter: brightness(0.9); }
