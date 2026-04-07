@@ -36,7 +36,7 @@ body {
 
 #labels {
   display: flex; flex-direction: column;
-  padding-top: 52px; /* 2 header rows × 26px */
+  padding-top: 30px; /* 1 header row */
   flex-shrink: 0;
   position: sticky; left: 0; z-index: 4; background: #fff;
 }
@@ -58,10 +58,17 @@ body {
   top: 0; bottom: 0;
   width: 2px;
   background: #e94560;
-  pointer-events: none;
-  z-index: 3;
+  pointer-events: auto;
+  cursor: ew-resize;
+  z-index: 5;
   left: 0;
-  box-shadow: 0 0 4px rgba(233,69,96,0.5);
+  box-shadow: 0 0 6px rgba(233,69,96,0.6);
+}
+#playhead::before {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  left: -8px; right: -8px;
 }
 
 /* ── Header rows ── */

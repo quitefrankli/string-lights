@@ -8,18 +8,17 @@
 <body>
 
 <div id="toolbar">
-  <label>Duration (s) <input type="number" id="seconds" value="10" min="0.1" max="600" step="0.5"></label>
+  <label>Duration (s) <input type="number" id="seconds" value="10" min="0.25" max="600" step="0.25"></label>
   <label>File <input type="text" id="filename" value="clip1" placeholder="clip1"></label>
   <button id="export-btn">Export .npy</button>
   <button id="clear-btn">Clear</button>
-  <span class="hint">left-click / drag = pluck &nbsp;|&nbsp; right-click = clear &nbsp;|&nbsp; click time ruler = seek</span>
+  <span class="hint">left-click / drag = pluck &nbsp;|&nbsp; right-click = clear &nbsp;|&nbsp; drag playhead or click ruler = seek</span>
 </div>
 
 <div id="grid-wrap">
   <div id="labels"></div>
   <div id="grid-inner">
     <div id="playhead"></div>
-    <div id="frame-numbers" class="header-row"></div>
     <div id="time-numbers" class="header-row time-row"></div>
     <div id="rows"></div>
   </div>
