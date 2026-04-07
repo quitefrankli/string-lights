@@ -6,7 +6,7 @@ import tempfile
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
 from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, MASK_FRAME_SKIP
 from .masking import resolve_device, load_models, get_mask
-from .pose import estimate_pose, is_pose_valid, Pose
+from .pose import estimate_pose, is_pose_valid, compute_median_pose, Pose
 from .audio import get_strings_to_highlight
 from .strings import draw_strings
 
@@ -31,15 +31,12 @@ def pass2_resolve_poses(raw_poses: list[Pose], mode: PoseResolution = POSE_RESOL
     """Derive a stable pose for every frame from the raw estimates."""
     n = len(raw_poses)
 
-    # Forward pass: accept poses that pass validity check
+    median_origin = compute_median_pose(raw_poses)
     accepted: list[Pose] = []
-    last_rvec, last_tvec = None, None
     for rvec, tvec in raw_poses:
-        if rvec is not None and is_pose_valid(rvec, tvec, last_rvec, last_tvec):
-            last_rvec, last_tvec = rvec, tvec
+        if rvec is not None and median_origin is not None and is_pose_valid(tvec, median_origin):
             accepted.append((rvec, tvec))
         else:
-            last_rvec, last_tvec = None, None
             accepted.append((None, None))
 
     if mode == PoseResolution.OMIT:
@@ -123,6 +120,12 @@ def pass4_write_output(cap: cv2.VideoCapture,
             break
         originals.append(frame.copy())
         frames.append(frame)
+
+    dist = np.zeros(5, dtype=np.float64)
+    axis_len = SQUARE_SIZE * 3
+    for i, (rvec, tvec) in enumerate(resolved_poses):
+        if rvec is not None and i < len(frames):
+            cv2.drawFrameAxes(frames[i], K, dist, rvec, tvec, axis_len)
 
     strings = get_strings_to_highlight(input_path, len(frames), fps)
     draw_strings(frames, resolved_poses, strings, K, fps)

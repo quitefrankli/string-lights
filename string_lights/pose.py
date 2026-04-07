@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from .config import MAX_ROTATION_JUMP, MAX_TRANSLATION_JUMP
+from .config import MAX_TRANSLATION_JUMP
 
 Pose = tuple[np.ndarray | None, np.ndarray | None]
 
@@ -28,20 +28,15 @@ def estimate_pose(gray: np.ndarray, detector: cv2.aruco.ArucoDetector, id_to_3d:
     return (rvec, tvec) if ok else (None, None)
 
 
-def is_pose_valid(rvec: np.ndarray, tvec: np.ndarray, prev_rvec: np.ndarray | None, prev_tvec: np.ndarray | None) -> bool:
-    # return True
-    r = np.degrees(rvec.flatten())
-    return 18 < r[0] < 22
-    R, _ = cv2.Rodrigues(rvec)
-    if (R @ np.array([0.0, 0.0, 1.0]))[2] > 0.0:
-        return False
+def compute_median_pose(raw_poses: list[Pose]) -> np.ndarray | None:
+    origins = []
+    for rvec, tvec in raw_poses:
+        if rvec is not None:
+            origins.append(tvec.flatten())
+    if not origins:
+        return None
+    return np.median(origins, axis=0)
 
-    if prev_rvec is not None:
-        R_prev, _ = cv2.Rodrigues(prev_rvec)
-        rvec_rel, _ = cv2.Rodrigues(R @ R_prev.T)
-        if np.linalg.norm(rvec_rel) > MAX_ROTATION_JUMP:
-            return False
-        if np.linalg.norm(tvec - prev_tvec) > MAX_TRANSLATION_JUMP:
-            return False
 
-    return True
+def is_pose_valid(tvec: np.ndarray, median_origin: np.ndarray) -> bool:
+    return np.linalg.norm(tvec.flatten() - median_origin) < MAX_TRANSLATION_JUMP

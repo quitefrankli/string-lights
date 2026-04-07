@@ -9,7 +9,6 @@ def build_board() -> tuple[cv2.aruco.Dictionary, dict[int, np.ndarray]]:
     board = cv2.aruco.CharucoBoard(
         (BOARD_COLS, BOARD_ROWS), SQUARE_SIZE, MARKER_SIZE, adict
     )
-    board.setLegacyPattern(True)
     obj_pts  = board.getObjPoints()
     ids_list = board.getIds().flatten()
     id_to_3d = {ids_list[i]: obj_pts[i].astype(np.float32) for i in range(len(ids_list))}
