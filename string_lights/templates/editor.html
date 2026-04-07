@@ -12,16 +12,21 @@
   <label>File <input type="text" id="filename" value="clip1" placeholder="clip1"></label>
   <button id="export-btn">Export .npy</button>
   <button id="clear-btn">Clear</button>
-  <span class="hint">left-click / drag = pluck &nbsp;|&nbsp; right-click = clear</span>
+  <span class="hint">left-click / drag = pluck &nbsp;|&nbsp; right-click = clear &nbsp;|&nbsp; click time ruler = seek</span>
 </div>
 
 <div id="grid-wrap">
   <div id="labels"></div>
   <div id="grid-inner">
+    <div id="playhead"></div>
     <div id="frame-numbers" class="header-row"></div>
     <div id="time-numbers" class="header-row time-row"></div>
     <div id="rows"></div>
   </div>
+</div>
+
+<div id="video-section">
+  <video id="video" controls></video>
 </div>
 
 <script src="/static/editor.js"></script>

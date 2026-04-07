@@ -42,9 +42,11 @@ def editor(port: int) -> None:
     import webbrowser
     from .editor import create_app
 
+    import os
     app = create_app()
-    webbrowser.open(f"http://localhost:{port}")
-    app.run(host="localhost", port=port)
+    if not os.environ.get("WERKZEUG_RUN_MAIN"):
+        webbrowser.open(f"http://localhost:{port}")
+    app.run(host="localhost", port=port, debug=True)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,11 @@ const CELL_W = 20;
 let numFrames = 0;
 let grid = []; // grid[stringIdx][frameIdx] = 0 | 1
 
+const video = document.getElementById('video');
+const playhead = document.getElementById('playhead');
+const gridWrap = document.getElementById('grid-wrap');
+const labelsEl = document.getElementById('labels');
+
 function initGrid(n) {
   grid = STRINGS.map(() => new Array(n).fill(0));
 }
@@ -18,7 +23,6 @@ function buildUI() {
   initGrid(numFrames);
 
   // String labels
-  const labelsEl = document.getElementById('labels');
   labelsEl.innerHTML = '';
   STRINGS.forEach(s => {
     const d = document.createElement('div');
@@ -72,7 +76,10 @@ function buildUI() {
   });
 
   renderGrid();
+  updatePlayhead();
 }
+
+// ── Rendering ──────────────────────────────────────────────────────────────
 
 function cellEl(si, f) {
   return document.querySelector(`.cell[data-s="${si}"][data-f="${f}"]`);
@@ -80,8 +87,7 @@ function cellEl(si, f) {
 
 function renderCell(si, f) {
   const el = cellEl(si, f);
-  if (!el) return;
-  el.classList.toggle('active', grid[si][f] === 1);
+  if (el) el.classList.toggle('active', grid[si][f] === 1);
 }
 
 function renderGrid() {
@@ -89,6 +95,37 @@ function renderGrid() {
     for (let f = 0; f < numFrames; f++) renderCell(si, f);
   });
 }
+
+// ── Playhead ───────────────────────────────────────────────────────────────
+
+function updatePlayhead() {
+  const x = video.currentTime * AUDIO_FPS * CELL_W;
+  playhead.style.left = x + 'px';
+
+  // Auto-scroll to keep playhead visible while playing
+  if (!video.paused) {
+    const labelsW = labelsEl.offsetWidth;
+    const viewW = gridWrap.offsetWidth - labelsW;
+    const scrollX = gridWrap.scrollLeft;
+    if (x < scrollX || x > scrollX + viewW - CELL_W * 4) {
+      gridWrap.scrollLeft = Math.max(0, x - viewW / 3);
+    }
+  }
+}
+
+video.addEventListener('timeupdate', updatePlayhead);
+video.addEventListener('seeked', updatePlayhead);
+
+// ── Seek by clicking time ruler ────────────────────────────────────────────
+
+document.getElementById('time-numbers').addEventListener('click', e => {
+  const rect = e.currentTarget.getBoundingClientRect();
+  const xInContent = e.clientX - rect.left + gridWrap.scrollLeft;
+  const frame = Math.floor(xInContent / CELL_W);
+  video.currentTime = Math.max(0, frame / AUDIO_FPS);
+});
+
+// ── Cell painting ──────────────────────────────────────────────────────────
 
 let painting = false;
 let paintValue = 0;
@@ -118,6 +155,18 @@ document.getElementById('rows').addEventListener('mouseover', e => {
 document.addEventListener('mouseup', () => { painting = false; });
 document.getElementById('rows').addEventListener('contextmenu', e => e.preventDefault());
 
+// ── Video loading ──────────────────────────────────────────────────────────
+
+function loadVideo() {
+  const stem = document.getElementById('filename').value.trim() || 'clip1';
+  video.src = '/video/' + stem;
+  video.load();
+}
+
+document.getElementById('filename').addEventListener('change', loadVideo);
+
+// ── Toolbar actions ────────────────────────────────────────────────────────
+
 document.getElementById('seconds').addEventListener('change', buildUI);
 
 document.getElementById('clear-btn').addEventListener('click', () => {
@@ -143,4 +192,7 @@ document.getElementById('export-btn').addEventListener('click', async () => {
   a.click();
 });
 
+// ── Init ───────────────────────────────────────────────────────────────────
+
 buildUI();
+loadVideo();
