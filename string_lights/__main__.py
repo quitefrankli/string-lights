@@ -49,5 +49,28 @@ def editor(port: int) -> None:
     app.run(host="localhost", port=port, debug=True)
 
 
+@main.command()
+@click.argument("filename")
+def tune(filename: str) -> None:
+    from .tuner import run_tuner
+
+    input_dir = Path("data/input")
+    if Path(filename).suffix:
+        input_path = input_dir / filename
+    else:
+        for ext in [".mp4", ".avi", ".mov", ".mkv", ".flv"]:
+            candidate = input_dir / (filename + ext)
+            if candidate.exists():
+                input_path = candidate
+                break
+        else:
+            input_path = input_dir / filename
+
+    if not input_path.exists():
+        raise click.ClickException(f"Input file not found: {input_path}")
+
+    run_tuner(str(input_path))
+
+
 if __name__ == "__main__":
     main()

@@ -3,14 +3,9 @@ import numpy as np
 
 from .config import *
 
-NUM_STRINGS = 6
-STRING_SPACING = SQUARE_SIZE * 0.83
-STRING0_OFFSET = np.array([CHARUCO_BOARD_WIDTH * 3, SQUARE_SIZE * 0.04, 0], dtype=np.float64)
-STRING_LENGTH = CHARUCO_BOARD_WIDTH * 6.8
-STRING_COLOR = (200, 220, 255)  # warm white (BGR)
-STRING_CORE_COLOR = (255, 255, 255)
-STRING_ALPHA = 0.8
-FADE_DURATION = 0.5  # seconds
+STRING_SPACING = SQUARE_SIZE * STRING_SPACING_FACTOR
+STRING0_OFFSET = np.array([CHARUCO_BOARD_WIDTH * STRING0_OFFSET_X_FACTOR, SQUARE_SIZE * STRING0_OFFSET_Y_FACTOR, 0], dtype=np.float64)
+STRING_LENGTH = CHARUCO_BOARD_WIDTH * STRING_LENGTH_FACTOR
 
 
 def draw_strings(frames: list[np.ndarray],
@@ -22,13 +17,8 @@ def draw_strings(frames: list[np.ndarray],
     fade_frames = int(fps * FADE_DURATION)
     last_active: dict[int, int] = {}
 
-    def get_convergence_factor(idx: int) -> float:
-        return [
-            1.0, 0.8, 0.6, 0.6, 0.8, 1.0
-        ][idx] * 1.0
-
     def project_string(i: int, rvec, tvec):
-        y0 = -STRING0_OFFSET[1] - i * STRING_SPACING * 0.86
+        y0 = -STRING0_OFFSET[1] - i * STRING_SPACING * STRING_CONVERGENCE_FACTOR
         y1 = -STRING0_OFFSET[1] - i * STRING_SPACING
         p0 = np.array([-STRING0_OFFSET[0], y0, STRING0_OFFSET[2]], dtype=np.float64)
         p1 = np.array([STRING_LENGTH - STRING0_OFFSET[0], y1, STRING0_OFFSET[2]], dtype=np.float64)
