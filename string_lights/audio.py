@@ -1,9 +1,24 @@
+import random
 from pathlib import Path
 
 import numpy as np
 
 AUDIO_FPS = 22050 / 512  # ~43.06 fps
 MIN_NOTE_FRAMES = 2  # ignore notes shorter than this (audio frames)
+
+
+def get_random_strings(total_frames: int, video_fps: float, seed: int | None = None) -> list[list[int]]:
+    """Generate random string highlights — strums every ~0.4-0.8s with 1-3 strings each."""
+    rng = random.Random(seed)
+    strings: list[list[int]] = [[] for _ in range(total_frames)]
+    i = 0
+    while i < total_frames:
+        n = rng.randint(1, 3)
+        picks = rng.sample(range(6), n)
+        strings[i] = picks
+        gap = rng.randint(int(video_fps * 0.4), max(int(video_fps * 0.8), int(video_fps * 0.4) + 1))
+        i += gap
+    return strings
 
 
 def _clean_tab(tab: np.ndarray) -> np.ndarray:

@@ -2,12 +2,13 @@ import cv2
 import numpy as np
 import subprocess
 import tempfile
+from pathlib import Path
 
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
 from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, MASK_FRAME_SKIP
 from .masking import resolve_device, load_models, get_mask
 from .pose import estimate_pose, is_pose_valid, compute_median_pose, Pose
-from .audio import get_strings_to_highlight
+from .audio import get_strings_to_highlight, get_random_strings
 from .strings import draw_strings
 
 
@@ -107,7 +108,8 @@ def pass4_write_output(cap: cv2.VideoCapture,
                        output_path: str,
                        fps: float,
                        w: int,
-                       h: int) -> None:
+                       h: int,
+                       random_strings: bool = False) -> None:
     """Seek back to the start and write annotated frames."""
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     total = len(resolved_poses)
@@ -127,7 +129,13 @@ def pass4_write_output(cap: cv2.VideoCapture,
         if rvec is not None and i < len(frames):
             cv2.drawFrameAxes(frames[i], K, dist, rvec, tvec, axis_len)
 
-    strings = get_strings_to_highlight(input_path, len(frames), fps)
+    npy_path = Path(input_path).with_suffix(".npy")
+    if random_strings or not npy_path.exists():
+        if not random_strings:
+            print(f"  no tab data at {npy_path}, using random strings")
+        strings = get_random_strings(len(frames), fps)
+    else:
+        strings = get_strings_to_highlight(input_path, len(frames), fps)
     draw_strings(frames, resolved_poses, strings, K, fps)
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -141,10 +149,11 @@ def pass4_write_output(cap: cv2.VideoCapture,
     out.release()
 
 
-def process_video(input_path: str, 
-                  output_path: str, 
-                  frames: int | None = None, 
-                  disable_masking: bool = False) -> None:
+def process_video(input_path: str,
+                  output_path: str,
+                  frames: int | None = None,
+                  disable_masking: bool = False,
+                  random_strings: bool = False) -> None:
     cap   = cv2.VideoCapture(input_path)
     w     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -173,7 +182,7 @@ def process_video(input_path: str,
 
     with tempfile.NamedTemporaryFile(suffix=".mp4") as tmp:
         tmp_path = tmp.name
-        pass4_write_output(cap, resolved_poses, hand_masks, K, input_path, tmp_path, fps, w, h)
+        pass4_write_output(cap, resolved_poses, hand_masks, K, input_path, tmp_path, fps, w, h, random_strings)
         subprocess.run(
             ["ffmpeg", "-y", "-i", tmp_path, "-i", input_path,
              "-map", "0:v:0", "-map", "1:a?",
