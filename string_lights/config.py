@@ -31,7 +31,9 @@ MASK_PROMPT = "hands"
 BOX_THRESHOLD = 0.35
 TEXT_THRESHOLD = 0.25
 MASK_THRESHOLD = 0.0   # SAM2 logit threshold; higher = tighter mask boundary
-MASK_FRAME_SKIP = 1
+# MASK_DILATE_PX = 15    # dilation after masking to fill gaps
+MASK_DILATE_PX = 12
+MASK_FRAME_SKIP = 3
 
 # String rendering
 NUM_STRINGS = 6

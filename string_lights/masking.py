@@ -9,7 +9,7 @@ from transformers import (
     Sam2Processor,
 )
 
-from .config import GD_MODEL_ID, SAM2_MODEL_ID, MASK_THRESHOLD
+from .config import GD_MODEL_ID, SAM2_MODEL_ID, MASK_THRESHOLD, MASK_DILATE_PX
 
 
 def resolve_device() -> str:
@@ -88,6 +88,10 @@ def get_mask(
         m = pred_masks[i, best:best+1].unsqueeze(0).float()
         m_up = torch.nn.functional.interpolate(m, size=(h, w), mode="bilinear", align_corners=False)
         combined = np.maximum(combined, (m_up[0, 0] > MASK_THRESHOLD).numpy().astype(np.uint8))
+
+    if MASK_DILATE_PX > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (MASK_DILATE_PX * 2 + 1,) * 2)
+        combined = cv2.dilate(combined, kernel)
 
     if debug_writer is not None:
         vis = frame_bgr.copy()
