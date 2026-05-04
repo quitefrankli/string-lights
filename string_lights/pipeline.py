@@ -1,19 +1,18 @@
 import cv2
 import numpy as np
 import subprocess
-import tempfile
 from pathlib import Path
+from typing import Generator
 
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
 from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, MASK_FRAME_SKIP
 from .masking import resolve_device, load_models, get_mask
 from .pose import estimate_pose, is_pose_valid, compute_median_pose, Pose
 from .audio import get_strings_to_highlight, get_random_strings
-from .strings import draw_strings
+from .strings import draw_strings_frame
 
 
 def pass1_raw_poses(cap: cv2.VideoCapture, total: int, detector: cv2.aruco.ArucoDetector, id_to_3d: dict[int, np.ndarray], K: np.ndarray) -> list[Pose]:
-    """Read every frame and return raw PnP estimates; (None, None) when detection fails."""
     raw = []
     for i in range(total):
         ret, frame = cap.read()
@@ -29,7 +28,6 @@ def pass1_raw_poses(cap: cv2.VideoCapture, total: int, detector: cv2.aruco.Aruco
 
 
 def pass2_resolve_poses(raw_poses: list[Pose], mode: PoseResolution = POSE_RESOLUTION) -> list[Pose]:
-    """Derive a stable pose for every frame from the raw estimates."""
     n = len(raw_poses)
 
     median_origin = compute_median_pose(raw_poses)
@@ -73,99 +71,40 @@ def pass2_resolve_poses(raw_poses: list[Pose], mode: PoseResolution = POSE_RESOL
     return resolved
 
 
-def pass3_hand_masks(cap: cv2.VideoCapture, total: int, w: int, h: int, fps: float, debug_out: str | None = None) -> list[np.ndarray]:
-    """Generate per-frame hand masks using GroundingDINO + SAM."""
-    device = resolve_device()
-    models = load_models(device)
-    gd_processor, gd_model, sam_processor, sam_model = models
-
-    debug_writer = None
-    if debug_out:
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        debug_writer = cv2.VideoWriter(debug_out, fourcc, fps, (w, h))
-
+def _stream_frames(cap: cv2.VideoCapture, total: int) -> Generator[np.ndarray, None, None]:
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    masks: list[np.ndarray] = []
-    current_mask = np.zeros((h, w), dtype=np.uint8)
-
-    try:
-        for i in range(total):
-            ret, frame = cap.read()
-            if not ret:
-                masks.append(current_mask)
-                if debug_writer:
-                    debug_writer.write(np.zeros((h, w, 3), dtype=np.uint8))
-                continue
-            if i % MASK_FRAME_SKIP == 0:
-                current_mask = get_mask(
-                    frame, MASK_PROMPT,
-                    gd_processor, gd_model, sam_processor, sam_model,
-                    device, BOX_THRESHOLD, TEXT_THRESHOLD,
-                    debug_writer=debug_writer,
-                )
-            elif debug_writer:
-                vis = frame.copy()
-                overlay = vis.copy()
-                overlay[current_mask.astype(bool)] = (0, 0, 200)
-                cv2.addWeighted(overlay, 0.4, vis, 0.6, 0, vis)
-                debug_writer.write(vis)
-            masks.append(current_mask)
-            if (i + 1) % 60 == 0:
-                print(f"  pass3 {i+1}/{total}  hand masks")
-    finally:
-        if debug_writer:
-            debug_writer.release()
-
-    return masks
-
-
-def pass4_write_output(cap: cv2.VideoCapture,
-                       resolved_poses: list[Pose],
-                       hand_masks: list[np.ndarray],
-                       K: np.ndarray,
-                       input_path: str,
-                       output_path: str,
-                       fps: float,
-                       w: int,
-                       h: int,
-                       random_strings: bool = False) -> None:
-    """Seek back to the start and write annotated frames."""
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    total = len(resolved_poses)
-
-    frames = []
-    originals = []
     for _ in range(total):
         ret, frame = cap.read()
         if not ret:
-            break
-        originals.append(frame.copy())
-        frames.append(frame)
+            return
+        yield frame
 
-    dist = np.zeros(5, dtype=np.float64)
-    axis_len = SQUARE_SIZE * 3
-    for i, (rvec, tvec) in enumerate(resolved_poses):
-        if rvec is not None and i < len(frames):
-            cv2.drawFrameAxes(frames[i], K, dist, rvec, tvec, axis_len)
 
-    npy_path = Path(input_path).with_suffix(".npy")
-    if random_strings or not npy_path.exists():
-        if not random_strings:
-            print(f"  no tab data at {npy_path}, using random strings")
-        strings = get_random_strings(len(frames), fps)
-    else:
-        strings = get_strings_to_highlight(input_path, len(frames), fps)
-    draw_strings(frames, resolved_poses, strings, K, fps)
-
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out    = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
-    for frame_idx, frame in enumerate(frames):
-        mask = hand_masks[frame_idx]
-        if mask.any():
-            mask_bool = mask.astype(bool)
-            frame[mask_bool] = originals[frame_idx][mask_bool]
-        out.write(frame)
-    out.release()
+def _stream_with_masks(
+    frames: Generator[np.ndarray, None, None],
+    w: int, h: int,
+    debug_writer: cv2.VideoWriter | None = None,
+) -> Generator[tuple[np.ndarray, np.ndarray], None, None]:
+    device = resolve_device()
+    gd_processor, gd_model, sam_processor, sam_model = load_models(device)
+    current_mask = np.zeros((h, w), dtype=np.uint8)
+    for i, frame in enumerate(frames):
+        if i % MASK_FRAME_SKIP == 0:
+            current_mask = get_mask(
+                frame, MASK_PROMPT,
+                gd_processor, gd_model, sam_processor, sam_model,
+                device, BOX_THRESHOLD, TEXT_THRESHOLD,
+                debug_writer=debug_writer,
+            )
+        elif debug_writer:
+            vis = frame.copy()
+            overlay = vis.copy()
+            overlay[current_mask.astype(bool)] = (0, 0, 200)
+            cv2.addWeighted(overlay, 0.4, vis, 0.6, 0, vis)
+            debug_writer.write(vis)
+        if (i + 1) % 60 == 0:
+            print(f"  pass3 {i+1}  hand masks")
+        yield frame, current_mask
 
 
 def process_video(input_path: str,
@@ -194,23 +133,65 @@ def process_video(input_path: str,
     detected = sum(1 for r, _ in resolved_poses if r is not None)
     print(f"  pass2 complete: stable pose in {detected}/{total} frames")
 
-    if disable_masking:
-        hand_masks = [np.zeros((h, w), dtype=np.uint8) for _ in range(total)]
+    npy_path = Path(input_path).with_suffix(".npy")
+    if random_strings or not npy_path.exists():
+        if not random_strings:
+            print(f"  no tab data at {npy_path}, using random strings")
+        strings = get_random_strings(total, fps)
     else:
-        debug_out = str(Path(output_path).with_suffix("").with_suffix("")) + ".debug.mp4" if debug_masks else None
-        hand_masks = pass3_hand_masks(cap, total, w, h, fps, debug_out=debug_out)
-    print(f"  pass3 complete: hand masks for {total} frames")
+        strings = get_strings_to_highlight(input_path, total, fps)
 
-    if not debug_masks:
-        with tempfile.NamedTemporaryFile(suffix=".mp4") as tmp:
-            tmp_path = tmp.name
-            pass4_write_output(cap, resolved_poses, hand_masks, K, input_path, tmp_path, fps, w, h, random_strings)
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", tmp_path, "-i", input_path,
-                 "-map", "0:v:0", "-map", "1:a?",
-                 "-c:v", "copy", "-c:a", "copy", "-shortest", output_path],
-                check=True, capture_output=True,
-            )
+    debug_writer = None
+    if debug_masks:
+        debug_out = str(Path(output_path).with_suffix("").with_suffix("")) + ".debug.mp4"
+        debug_writer = cv2.VideoWriter(debug_out, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+
+    empty_mask = np.zeros((h, w), dtype=np.uint8)
+    if disable_masking:
+        frames_masks = ((frame, empty_mask) for frame in _stream_frames(cap, total))
+    else:
+        frames_masks = _stream_with_masks(_stream_frames(cap, total), w, h, debug_writer)
+
+    dist     = np.zeros(5, dtype=np.float64)
+    axis_len = SQUARE_SIZE * 3
+    last_active: dict[int, int] = {}
+
+    try:
+        if not debug_masks:
+            ffmpeg_cmd = [
+                "ffmpeg", "-y",
+                "-f", "rawvideo", "-vcodec", "rawvideo",
+                "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", f"{fps:.6f}",
+                "-i", "pipe:0",
+                "-i", input_path,
+                "-map", "0:v:0", "-map", "1:a?",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-c:a", "copy", "-shortest",
+                output_path,
+            ]
+            proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                for frame_idx, (frame, mask) in enumerate(frames_masks):
+                    original = frame.copy()
+                    rvec, tvec = resolved_poses[frame_idx]
+                    if rvec is not None:
+                        cv2.drawFrameAxes(frame, K, dist, rvec, tvec, axis_len)
+                    draw_strings_frame(frame, frame_idx, rvec, tvec, strings[frame_idx], last_active, K, fps)
+                    if mask.any():
+                        frame[mask.astype(bool)] = original[mask.astype(bool)]
+                    proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+            stderr = proc.stderr.read().decode(errors="replace")
+            if proc.wait() != 0:
+                raise RuntimeError(f"ffmpeg failed:\n{stderr}")
+        else:
+            for _ in frames_masks:
+                pass
+    finally:
+        if debug_writer:
+            debug_writer.release()
+
     cap.release()
-
     print(f"Done.  Board pose found in {detected}/{total} frames ({100*detected//total}%).")
