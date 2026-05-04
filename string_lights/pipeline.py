@@ -201,15 +201,16 @@ def process_video(input_path: str,
         hand_masks = pass3_hand_masks(cap, total, w, h, fps, debug_out=debug_out)
     print(f"  pass3 complete: hand masks for {total} frames")
 
-    with tempfile.NamedTemporaryFile(suffix=".mp4") as tmp:
-        tmp_path = tmp.name
-        pass4_write_output(cap, resolved_poses, hand_masks, K, input_path, tmp_path, fps, w, h, random_strings)
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", tmp_path, "-i", input_path,
-             "-map", "0:v:0", "-map", "1:a?",
-             "-c:v", "copy", "-c:a", "copy", "-shortest", output_path],
-            check=True, capture_output=True,
-        )
+    if not debug_masks:
+        with tempfile.NamedTemporaryFile(suffix=".mp4") as tmp:
+            tmp_path = tmp.name
+            pass4_write_output(cap, resolved_poses, hand_masks, K, input_path, tmp_path, fps, w, h, random_strings)
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", tmp_path, "-i", input_path,
+                 "-map", "0:v:0", "-map", "1:a?",
+                 "-c:v", "copy", "-c:a", "copy", "-shortest", output_path],
+                check=True, capture_output=True,
+            )
     cap.release()
 
     print(f"Done.  Board pose found in {detected}/{total} frames ({100*detected//total}%).")

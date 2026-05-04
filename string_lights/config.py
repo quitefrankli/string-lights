@@ -24,13 +24,14 @@ class PoseResolution(Enum):
 
 POSE_RESOLUTION = PoseResolution.HOLD
 
-# Hand masking (SAM)
+# Hand masking
 GD_MODEL_ID = "IDEA-Research/grounding-dino-tiny"
-SAM_MODEL_ID = "facebook/sam-vit-base"
+SAM2_MODEL_ID = "facebook/sam2-hiera-small"
 MASK_PROMPT = "hands"
 BOX_THRESHOLD = 0.35
 TEXT_THRESHOLD = 0.25
-MASK_FRAME_SKIP = 1  # reuse mask for N frames
+MASK_THRESHOLD = 0.0   # SAM2 logit threshold; higher = tighter mask boundary
+MASK_FRAME_SKIP = 1
 
 # String rendering
 NUM_STRINGS = 6

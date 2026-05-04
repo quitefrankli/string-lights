@@ -5,11 +5,11 @@ from PIL import Image
 from transformers import (
     AutoProcessor,
     AutoModelForZeroShotObjectDetection,
-    SamModel,
-    SamProcessor,
+    Sam2Model,
+    Sam2Processor,
 )
 
-from .config import GD_MODEL_ID, SAM_MODEL_ID
+from .config import GD_MODEL_ID, SAM2_MODEL_ID, MASK_THRESHOLD
 
 
 def resolve_device() -> str:
@@ -25,9 +25,9 @@ def load_models(device: str):
     gd_processor = AutoProcessor.from_pretrained(GD_MODEL_ID)
     gd_model = AutoModelForZeroShotObjectDetection.from_pretrained(GD_MODEL_ID).to(device)
 
-    print(f"  loading SAM ({SAM_MODEL_ID})...")
-    sam_processor = SamProcessor.from_pretrained(SAM_MODEL_ID)
-    sam_model = SamModel.from_pretrained(SAM_MODEL_ID).to(device)
+    print(f"  loading SAM2 ({SAM2_MODEL_ID})...")
+    sam_processor = Sam2Processor.from_pretrained(SAM2_MODEL_ID)
+    sam_model = Sam2Model.from_pretrained(SAM2_MODEL_ID).to(device)
 
     gd_model.eval()
     sam_model.eval()
@@ -77,20 +77,17 @@ def get_mask(
     with torch.no_grad():
         sam_outputs = sam_model(**sam_inputs)
 
-    masks = sam_processor.post_process_masks(
-        sam_outputs.pred_masks.cpu(),
-        sam_inputs["original_sizes"].cpu(),
-        sam_inputs["reshaped_input_sizes"].cpu(),
-    )[0]
-
+    # pred_masks: [batch, num_boxes, num_candidates, mask_h, mask_w]
+    pred_masks = sam_outputs.pred_masks[0].cpu()
     iou_scores = sam_outputs.iou_scores[0].cpu()
     best_indices = iou_scores.argmax(dim=1)
 
     combined = np.zeros((h, w), dtype=np.uint8)
-    for i in range(masks.shape[0]):
+    for i in range(pred_masks.shape[0]):
         best = best_indices[i].item()
-        m = masks[i, best].numpy().astype(np.uint8)
-        combined = np.maximum(combined, m)
+        m = pred_masks[i, best:best+1].unsqueeze(0).float()
+        m_up = torch.nn.functional.interpolate(m, size=(h, w), mode="bilinear", align_corners=False)
+        combined = np.maximum(combined, (m_up[0, 0] > MASK_THRESHOLD).numpy().astype(np.uint8))
 
     if debug_writer is not None:
         vis = frame_bgr.copy()

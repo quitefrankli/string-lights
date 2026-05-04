@@ -14,14 +14,14 @@ def main() -> None:
 @click.option("--frames", type=int, default=None, help="Max number of frames to process.")
 @click.option("--disable-masking", is_flag=True, default=False, help="Skip hand masking (faster for dev testing).")
 @click.option("--random-strings", is_flag=True, default=False, help="Generate random string highlights instead of reading from .npy.")
-@click.option("--debug-masks", is_flag=True, default=False, help="Write debug video with SAM boxes and mask overlay alongside output.")
+@click.option("--debug-masks", is_flag=True, default=False, help="Write debug video with SAM boxes and mask overlay; skips normal output.")
 def run(filename: str, frames: int | None, disable_masking: bool, random_strings: bool, debug_masks: bool) -> None:
     input_dir = Path("data/input")
 
     if Path(filename).suffix:
         input_path = input_dir / filename
     else:
-        for ext in [".mp4", ".avi", ".mov", ".mkv", ".flv"]:
+        for ext in [".mp4", ".avi", ".mov", ".mkv", ".flv", ".m4v"]:
             candidate = input_dir / (filename + ext)
             if candidate.exists():
                 input_path = candidate
@@ -60,7 +60,7 @@ def tune(filename: str) -> None:
     if Path(filename).suffix:
         input_path = input_dir / filename
     else:
-        for ext in [".mp4", ".avi", ".mov", ".mkv", ".flv"]:
+        for ext in [".mp4", ".avi", ".mov", ".mkv", ".flv", ".m4v"]:
             candidate = input_dir / (filename + ext)
             if candidate.exists():
                 input_path = candidate
