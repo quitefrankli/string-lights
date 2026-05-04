@@ -44,6 +44,7 @@ def get_mask(
     device: str,
     box_threshold: float,
     text_threshold: float,
+    debug_writer: cv2.VideoWriter | None = None,
 ) -> np.ndarray:
     h, w = frame_bgr.shape[:2]
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -90,5 +91,18 @@ def get_mask(
         best = best_indices[i].item()
         m = masks[i, best].numpy().astype(np.uint8)
         combined = np.maximum(combined, m)
+
+    if debug_writer is not None:
+        vis = frame_bgr.copy()
+        overlay = vis.copy()
+        overlay[combined.astype(bool)] = (0, 0, 200)
+        cv2.addWeighted(overlay, 0.4, vis, 0.6, 0, vis)
+        scores = results["scores"].cpu().numpy()
+        for box, score in zip(input_boxes, scores):
+            x0, y0, x1, y1 = (int(v) for v in box)
+            cv2.rectangle(vis, (x0, y0), (x1, y1), (0, 200, 0), 2)
+            cv2.putText(vis, f"{score:.2f}", (x0, y0 - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1)
+        debug_writer.write(vis)
 
     return combined

@@ -73,30 +73,49 @@ def pass2_resolve_poses(raw_poses: list[Pose], mode: PoseResolution = POSE_RESOL
     return resolved
 
 
-def pass3_hand_masks(cap: cv2.VideoCapture, total: int, w: int, h: int) -> list[np.ndarray]:
+def pass3_hand_masks(cap: cv2.VideoCapture, total: int, w: int, h: int, fps: float, debug_out: str | None = None) -> list[np.ndarray]:
     """Generate per-frame hand masks using GroundingDINO + SAM."""
     device = resolve_device()
     models = load_models(device)
     gd_processor, gd_model, sam_processor, sam_model = models
 
+    debug_writer = None
+    if debug_out:
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        debug_writer = cv2.VideoWriter(debug_out, fourcc, fps, (w, h))
+
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     masks: list[np.ndarray] = []
     current_mask = np.zeros((h, w), dtype=np.uint8)
 
-    for i in range(total):
-        ret, frame = cap.read()
-        if not ret:
+    try:
+        for i in range(total):
+            ret, frame = cap.read()
+            if not ret:
+                masks.append(current_mask)
+                if debug_writer:
+                    debug_writer.write(np.zeros((h, w, 3), dtype=np.uint8))
+                continue
+            if i % MASK_FRAME_SKIP == 0:
+                current_mask = get_mask(
+                    frame, MASK_PROMPT,
+                    gd_processor, gd_model, sam_processor, sam_model,
+                    device, BOX_THRESHOLD, TEXT_THRESHOLD,
+                    debug_writer=debug_writer,
+                )
+            elif debug_writer:
+                vis = frame.copy()
+                overlay = vis.copy()
+                overlay[current_mask.astype(bool)] = (0, 0, 200)
+                cv2.addWeighted(overlay, 0.4, vis, 0.6, 0, vis)
+                debug_writer.write(vis)
             masks.append(current_mask)
-            continue
-        if i % MASK_FRAME_SKIP == 0:
-            current_mask = get_mask(
-                frame, MASK_PROMPT,
-                gd_processor, gd_model, sam_processor, sam_model,
-                device, BOX_THRESHOLD, TEXT_THRESHOLD,
-            )
-        masks.append(current_mask)
-        if (i + 1) % 60 == 0:
-            print(f"  pass3 {i+1}/{total}  hand masks")
+            if (i + 1) % 60 == 0:
+                print(f"  pass3 {i+1}/{total}  hand masks")
+    finally:
+        if debug_writer:
+            debug_writer.release()
+
     return masks
 
 
@@ -153,7 +172,8 @@ def process_video(input_path: str,
                   output_path: str,
                   frames: int | None = None,
                   disable_masking: bool = False,
-                  random_strings: bool = False) -> None:
+                  random_strings: bool = False,
+                  debug_masks: bool = False) -> None:
     cap   = cv2.VideoCapture(input_path)
     w     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -177,7 +197,8 @@ def process_video(input_path: str,
     if disable_masking:
         hand_masks = [np.zeros((h, w), dtype=np.uint8) for _ in range(total)]
     else:
-        hand_masks = pass3_hand_masks(cap, total, w, h)
+        debug_out = str(Path(output_path).with_suffix("").with_suffix("")) + ".debug.mp4" if debug_masks else None
+        hand_masks = pass3_hand_masks(cap, total, w, h, fps, debug_out=debug_out)
     print(f"  pass3 complete: hand masks for {total} frames")
 
     with tempfile.NamedTemporaryFile(suffix=".mp4") as tmp:

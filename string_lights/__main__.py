@@ -14,7 +14,8 @@ def main() -> None:
 @click.option("--frames", type=int, default=None, help="Max number of frames to process.")
 @click.option("--disable-masking", is_flag=True, default=False, help="Skip hand masking (faster for dev testing).")
 @click.option("--random-strings", is_flag=True, default=False, help="Generate random string highlights instead of reading from .npy.")
-def run(filename: str, frames: int | None, disable_masking: bool, random_strings: bool) -> None:
+@click.option("--debug-masks", is_flag=True, default=False, help="Write debug video with SAM boxes and mask overlay alongside output.")
+def run(filename: str, frames: int | None, disable_masking: bool, random_strings: bool, debug_masks: bool) -> None:
     input_dir = Path("data/input")
 
     if Path(filename).suffix:
@@ -34,7 +35,7 @@ def run(filename: str, frames: int | None, disable_masking: bool, random_strings
     stem = input_path.stem
     output_path = Path("data/output") / f"{stem}.mp4"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    process_video(str(input_path), str(output_path), frames=frames, disable_masking=disable_masking, random_strings=random_strings)
+    process_video(str(input_path), str(output_path), frames=frames, disable_masking=disable_masking, random_strings=random_strings, debug_masks=debug_masks)
 
 
 @main.command()
