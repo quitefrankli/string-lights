@@ -17,18 +17,18 @@ function initGrid(n) {
 }
 
 function buildUI() {
-  const secs = Math.max(COL_DUR, parseFloat(document.getElementById('seconds').value) || 10);
+  const secs = Math.max(COL_DUR, (isFinite(video.duration) ? video.duration : null) || 10);
   numCols = Math.ceil(secs / COL_DUR);
   initGrid(numCols);
 
-  // String labels
+  // String labels (high → low)
   labelsEl.innerHTML = '';
-  STRINGS.forEach(s => {
+  for (let si = STRINGS.length - 1; si >= 0; si--) {
     const d = document.createElement('div');
     d.className = 'string-label';
-    d.textContent = s;
+    d.textContent = STRINGS[si];
     labelsEl.appendChild(d);
-  });
+  }
 
   // Time ruler: tick every col (0.25s), label every other col (0.5s)
   const timeEl = document.getElementById('time-numbers');
@@ -42,10 +42,10 @@ function buildUI() {
     timeEl.appendChild(d);
   }
 
-  // Grid rows
+  // Grid rows (high → low)
   const rowsEl = document.getElementById('rows');
   rowsEl.innerHTML = '';
-  STRINGS.forEach((_, si) => {
+  for (let si = STRINGS.length - 1; si >= 0; si--) {
     const row = document.createElement('div');
     row.className = 'row';
     for (let c = 0; c < numCols; c++) {
@@ -56,7 +56,7 @@ function buildUI() {
       row.appendChild(cell);
     }
     rowsEl.appendChild(row);
-  });
+  }
 
   renderGrid();
   updatePlayhead();
@@ -168,12 +168,58 @@ document.addEventListener('mouseup', () => {
   draggingPlayhead = false;
 });
 
+const STRING_KEYS = { q: 0, w: 1, e: 2, a: 3, s: 4, d: 5 };
+
+function isInputFocused() {
+  const t = document.activeElement?.tagName;
+  return t === 'INPUT' || t === 'TEXTAREA';
+}
+
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
     e.preventDefault();
     if (!history.length) return;
     grid = history.pop();
     renderGrid();
+    return;
+  }
+
+  if (isInputFocused()) return;
+
+  const intervalSec = (parseFloat(document.getElementById('interval').value) || 250) / 1000;
+
+  if (e.key === ' ') {
+    e.preventDefault();
+    if (video.paused) video.play(); else video.pause();
+    return;
+  }
+
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    video.currentTime = 0;
+    return;
+  }
+
+  if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    video.currentTime = Math.min(video.currentTime + intervalSec, video.duration || 1e9);
+    return;
+  }
+
+  if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    video.currentTime = Math.max(video.currentTime - intervalSec, 0);
+    return;
+  }
+
+  if (e.key in STRING_KEYS && video.paused) {
+    const si = STRING_KEYS[e.key];
+    const c = Math.floor(video.currentTime / COL_DUR);
+    if (c < numCols) {
+      history.push(snapshot());
+      grid[si][c] ^= 1;
+      renderCell(si, c);
+    }
   }
 });
 document.getElementById('rows').addEventListener('contextmenu', e => e.preventDefault());
@@ -187,10 +233,9 @@ function loadVideo() {
 }
 
 document.getElementById('filename').addEventListener('change', loadVideo);
+video.addEventListener('loadedmetadata', buildUI);
 
 // ── Toolbar actions ────────────────────────────────────────────────────────
-
-document.getElementById('seconds').addEventListener('change', buildUI);
 
 document.getElementById('clear-btn').addEventListener('click', () => {
   initGrid(numCols);

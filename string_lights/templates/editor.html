@@ -8,11 +8,11 @@
 <body>
 
 <div id="toolbar">
-  <label>Duration (s) <input type="number" id="seconds" value="10" min="0.25" max="600" step="0.25"></label>
+  <label>Interval (ms) <input type="number" id="interval" value="250" min="1" max="10000" step="1"></label>
   <label>File <input type="text" id="filename" value="clip1" placeholder="clip1"></label>
   <button id="export-btn">Export .npy</button>
   <button id="clear-btn">Clear</button>
-  <span class="hint">left-click / drag = pluck &nbsp;|&nbsp; right-click = clear &nbsp;|&nbsp; drag playhead or click ruler = seek</span>
+  <span class="hint">click/drag = pluck &nbsp;|&nbsp; right-click = clear &nbsp;|&nbsp; Space = play/pause &nbsp;|&nbsp; ←→ = step interval &nbsp;|&nbsp; Enter = rewind &nbsp;|&nbsp; q w e a s d = toggle string</span>
 </div>
 
 <div id="grid-wrap">
