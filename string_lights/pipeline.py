@@ -20,7 +20,15 @@ def poses_path(stem: str) -> Path:
 
 
 def masks_path(stem: str) -> Path:
-    return COMPONENTS_DIR / "masks" / f"{stem}.npz"
+    return COMPONENTS_DIR / "masks" / f"{stem}.npy"
+
+
+def masks_meta_path(stem: str) -> Path:
+    return COMPONENTS_DIR / "masks" / f"{stem}.meta.npz"
+
+
+def masks_cached(stem: str) -> bool:
+    return masks_path(stem).exists() and masks_meta_path(stem).exists()
 
 
 def _video_meta(cap: cv2.VideoCapture, frames: int | None = None) -> dict:
@@ -157,13 +165,14 @@ def load_poses(stem: str) -> tuple[list[Pose], dict]:
 
 def compute_masks(
     input_path: str,
+    stem: str | None = None,
     frames: int | None = None,
     debug_writer: cv2.VideoWriter | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """Compute SAM2 masks at every MASK_FRAME_SKIP-th frame.
 
-    Returns (keyframes (K,h,w) uint8, indices (K,) int32, meta).
-    If `debug_writer` is set, writes overlay for every frame (not just keyframes).
+    Streams mask writes to a memmap file (if stem given) to avoid accumulating
+    all frames in RAM. Returns (keyframes (K,h,w) uint8, indices (K,) int32, meta).
     """
     cap = cv2.VideoCapture(input_path)
     meta = _video_meta(cap, frames)
@@ -172,8 +181,18 @@ def compute_masks(
     device = resolve_device()
     gd_processor, gd_model, sam_processor, sam_model = load_models(device)
 
-    indices: list[int] = []
-    masks: list[np.ndarray] = []
+    # Pre-allocate max possible keyframes; actual count tracked by k.
+    # If stem given, stream directly to disk via memmap to avoid RAM accumulation.
+    n_max = max(1, -(-total // MASK_FRAME_SKIP))  # ceiling division
+    if stem is not None:
+        out_path = masks_path(stem)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        buf = np.lib.format.open_memmap(str(out_path), mode="w+", dtype=np.uint8, shape=(n_max, h, w))
+    else:
+        buf = np.zeros((n_max, h, w), dtype=np.uint8)
+
+    indices_list: list[int] = []
+    k = 0
     current = np.zeros((h, w), dtype=np.uint8)
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     for i in range(total):
@@ -187,9 +206,12 @@ def compute_masks(
                 device, BOX_THRESHOLD, TEXT_THRESHOLD,
                 debug_writer=debug_writer,
             )
-            indices.append(i)
-            masks.append(current.copy())
-            print(f"  masks: keyframe at {i}/{total} ({len(indices)} total)")
+            buf[k] = current
+            indices_list.append(i)
+            k += 1
+            if k % 30 == 0 or i == total - 1:
+                n_detected = sum(1 for j in range(k) if buf[j].any())
+                print(f"  masks: {i+1}/{total} frames, {n_detected}/{k} had detections")
         elif debug_writer is not None:
             vis = frame.copy()
             overlay = vis.copy()
@@ -197,31 +219,39 @@ def compute_masks(
             cv2.addWeighted(overlay, 0.4, vis, 0.6, 0, vis)
             debug_writer.write(vis)
     cap.release()
-    if not masks:
-        masks.append(np.zeros((h, w), dtype=np.uint8))
-        indices.append(0)
-    return np.stack(masks).astype(np.uint8), np.array(indices, dtype=np.int32), meta
+
+    if k == 0:
+        k = 1
+        indices_list.append(0)
+
+    if isinstance(buf, np.memmap):
+        buf.flush()
+
+    return buf[:k], np.array(indices_list, dtype=np.int32), meta
 
 
-def save_masks(stem: str, masks: np.ndarray, indices: np.ndarray, meta: dict) -> Path:
-    path = masks_path(stem)
-    path.parent.mkdir(parents=True, exist_ok=True)
+def save_masks(stem: str, indices: np.ndarray, meta: dict) -> Path:
+    # masks .npy is already written to disk by compute_masks (via memmap flush);
+    # only the small metadata file needs to be saved here.
+    npy_path = masks_path(stem)
+    meta_path = masks_meta_path(stem)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
-        path, masks=masks, indices=indices,
+        str(meta_path), indices=indices,
         w=meta["w"], h=meta["h"], fps=meta["fps"], total=meta["total"],
     )
-    print(f"  masks cached → {path}")
-    return path
+    print(f"  masks cached → {npy_path}")
+    return npy_path
 
 
 def load_masks(stem: str) -> tuple[np.ndarray, np.ndarray, dict]:
-    path = masks_path(stem)
-    data = np.load(path)
+    data = np.load(str(masks_meta_path(stem)))
+    masks = np.load(str(masks_path(stem)), mmap_mode="r")
     meta = {
         "w": int(data["w"]), "h": int(data["h"]),
         "fps": float(data["fps"]), "total": int(data["total"]),
     }
-    return data["masks"], data["indices"], meta
+    return masks, data["indices"], meta
 
 
 def masks_iter(masks: np.ndarray, indices: np.ndarray, total: int) -> Iterator[np.ndarray]:
@@ -324,7 +354,7 @@ def process_video(
             debug_out, cv2.VideoWriter_fourcc(*"mp4v"), meta["fps"], (meta["w"], meta["h"])
         )
         try:
-            if use_cached_masks and masks_path(stem).exists():
+            if use_cached_masks and masks_cached(stem):
                 print(f"  using cached masks ← {masks_path(stem)}")
                 masks_arr, indices, _ = load_masks(stem)
                 cap2 = cv2.VideoCapture(input_path)
@@ -362,8 +392,8 @@ def process_video(
 
     # --masks: just compute & cache masks
     if only_masks:
-        masks_arr, indices, mmeta = compute_masks(input_path, frames=frames)
-        save_masks(stem, masks_arr, indices, mmeta)
+        masks_arr, indices, mmeta = compute_masks(input_path, stem=stem, frames=frames)
+        save_masks(stem, indices, mmeta)
 
     if only_mode:
         return
@@ -381,13 +411,13 @@ def process_video(
     masks_data = None
     if not disable_masking:
         if use_cached_masks:
-            if not masks_path(stem).exists():
+            if not masks_cached(stem):
                 raise FileNotFoundError(f"No cached masks at {masks_path(stem)}")
             print(f"  using cached masks ← {masks_path(stem)}")
             masks_arr, indices, _ = load_masks(stem)
         else:
-            masks_arr, indices, mmeta = compute_masks(input_path, frames=frames)
-            save_masks(stem, masks_arr, indices, mmeta)
+            masks_arr, indices, mmeta = compute_masks(input_path, stem=stem, frames=frames)
+            save_masks(stem, indices, mmeta)
         masks_data = (masks_arr, indices)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)

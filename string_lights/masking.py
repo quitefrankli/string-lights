@@ -65,6 +65,8 @@ def get_mask(
 
     boxes = results["boxes"]
     if boxes.shape[0] == 0:
+        if debug_writer is not None:
+            debug_writer.write(frame_bgr)
         return np.zeros((h, w), dtype=np.uint8)
 
     input_boxes = boxes.cpu().numpy().tolist()
