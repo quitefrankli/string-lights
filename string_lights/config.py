@@ -26,14 +26,15 @@ POSE_RESOLUTION = PoseResolution.HOLD
 
 # Hand masking
 GD_MODEL_ID = "IDEA-Research/grounding-dino-tiny"
-SAM2_MODEL_ID = "facebook/sam2-hiera-small"
+# SAM2_MODEL_ID = "facebook/sam2-hiera-small"
+# SAM2_MODEL_ID = "facebook/sam2-hiera-base-plus"
+SAM2_MODEL_ID = "facebook/sam2.1-hiera-large"
 MASK_PROMPT = "hands"
 BOX_THRESHOLD = 0.35
 TEXT_THRESHOLD = 0.25
 MASK_THRESHOLD = 0.0   # SAM2 logit threshold; higher = tighter mask boundary
-# MASK_DILATE_PX = 15    # dilation after masking to fill gaps
-MASK_DILATE_PX = 12
-MASK_FRAME_SKIP = 3
+MASK_DILATE_PX = 3    # dilation after masking to fill gaps
+MASK_FRAME_SKIP = 1
 
 # String rendering
 NUM_STRINGS = 6

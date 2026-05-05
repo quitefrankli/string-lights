@@ -226,10 +226,55 @@ document.getElementById('rows').addEventListener('contextmenu', e => e.preventDe
 
 // ── Video loading ──────────────────────────────────────────────────────────
 
+let availableItems = [];
+
+function currentStem() {
+  return document.getElementById('filename').value;
+}
+
+function setStatus(msg, kind = '') {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = 'status ' + kind;
+}
+
 function loadVideo() {
-  const stem = document.getElementById('filename').value.trim() || 'clip1';
+  const stem = currentStem();
+  if (!stem) return;
   video.src = '/video/' + stem;
   video.load();
+  loadProjections(stem);
+  const item = availableItems.find(i => i.stem === stem);
+  if (item) {
+    const tags = [];
+    if (item.has_poses) tags.push('poses ✓'); else tags.push('poses ✗');
+    if (item.has_masks) tags.push('masks ✓'); else tags.push('masks ✗');
+    setStatus(tags.join('  '));
+  }
+}
+
+async function refreshFileList() {
+  const resp = await fetch('/list');
+  const data = await resp.json();
+  availableItems = data.items || [];
+  const sel = document.getElementById('filename');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  for (const item of availableItems) {
+    const opt = document.createElement('option');
+    opt.value = item.stem;
+    let label = item.stem;
+    const flags = [];
+    if (item.has_poses) flags.push('P');
+    if (item.has_masks) flags.push('M');
+    if (flags.length) label += '  [' + flags.join('') + ']';
+    opt.textContent = label;
+    sel.appendChild(opt);
+  }
+  if (availableItems.length) {
+    sel.value = availableItems.find(i => i.stem === prev) ? prev : availableItems[0].stem;
+    loadVideo();
+  }
 }
 
 document.getElementById('filename').addEventListener('change', loadVideo);
@@ -242,17 +287,19 @@ document.getElementById('clear-btn').addEventListener('click', () => {
   renderGrid();
 });
 
-document.getElementById('export-btn').addEventListener('click', async () => {
-  const filename = document.getElementById('filename').value.trim() || 'clip1';
-
-  // Expand each 0.25s column to its audio frames
+function gridToAudioFrames() {
   const totalAudioFrames = numCols * FRAMES_PER_COL;
   const frames = [];
   for (let f = 0; f < totalAudioFrames; f++) {
     const col = Math.floor(f / FRAMES_PER_COL);
     frames.push(STRINGS.map((_, si) => grid[si][col]));
   }
+  return frames;
+}
 
+document.getElementById('export-btn').addEventListener('click', async () => {
+  const filename = currentStem() || 'clip1';
+  const frames = gridToAudioFrames();
   const resp = await fetch('/export', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -266,7 +313,85 @@ document.getElementById('export-btn').addEventListener('click', async () => {
   a.click();
 });
 
+// ── Live string overlay ────────────────────────────────────────────────────
+
+const HOLD_DURATION = 0.8;
+const STRING_COLOR = '#00ff00';
+const STRING_WIDTH = 4;
+
+const overlay = document.getElementById('overlay');
+const octx = overlay.getContext('2d');
+let projData = null;
+const projCache = {};
+
+async function loadProjections(stem) {
+  projData = null;
+  if (projCache[stem] !== undefined) {
+    projData = projCache[stem];
+    if (projData) {
+      overlay.width = projData.w;
+      overlay.height = projData.h;
+    }
+    return;
+  }
+  try {
+    const r = await fetch('/strings/' + stem);
+    if (!r.ok) {
+      const txt = await r.text();
+      setStatus('overlay disabled — ' + txt, 'err');
+      projCache[stem] = null;
+      return;
+    }
+    const data = await r.json();
+    projCache[stem] = data;
+    projData = data;
+    overlay.width = data.w;
+    overlay.height = data.h;
+  } catch (e) {
+    setStatus('overlay error: ' + e.message, 'err');
+    projCache[stem] = null;
+  }
+}
+
+function isLit(si, t) {
+  const c = Math.floor(t / COL_DUR);
+  if (c < 0 || !grid[si]) return false;
+  for (let cc = c; cc >= 0; cc--) {
+    if (grid[si][cc] === 1) {
+      return (t - cc * COL_DUR) <= HOLD_DURATION;
+    }
+  }
+  return false;
+}
+
+function drawOverlay() {
+  if (!overlay.width) return;
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  if (!projData) return;
+  const t = video.currentTime;
+  const fi = Math.min(projData.lines.length - 1, Math.max(0, Math.floor(t * projData.fps)));
+  const lines = projData.lines[fi];
+  if (!lines) return;
+  octx.strokeStyle = STRING_COLOR;
+  octx.lineWidth = STRING_WIDTH;
+  octx.lineCap = 'round';
+  for (let si = 0; si < 6; si++) {
+    if (!isLit(si, t)) continue;
+    const [x0, y0, x1, y1] = lines[si];
+    octx.beginPath();
+    octx.moveTo(x0, y0);
+    octx.lineTo(x1, y1);
+    octx.stroke();
+  }
+}
+
+function rafLoop() {
+  drawOverlay();
+  requestAnimationFrame(rafLoop);
+}
+rafLoop();
+
 // ── Init ───────────────────────────────────────────────────────────────────
 
 buildUI();
-loadVideo();
+refreshFileList();

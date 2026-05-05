@@ -15,7 +15,12 @@ def main() -> None:
 @click.option("--disable-masking", is_flag=True, default=False, help="Skip hand masking (faster for dev testing).")
 @click.option("--random-strings", is_flag=True, default=False, help="Generate random string highlights instead of reading from .npy.")
 @click.option("--debug-masks", is_flag=True, default=False, help="Write debug video with SAM boxes and mask overlay; skips normal output.")
-def run(filename: str, frames: int | None, disable_masking: bool, random_strings: bool, debug_masks: bool) -> None:
+@click.option("--poses", "only_poses", is_flag=True, default=False, help="Only compute and cache pose data; no render.")
+@click.option("--masks", "only_masks", is_flag=True, default=False, help="Only compute and cache mask data; no render.")
+@click.option("--use-cached-poses", is_flag=True, default=False, help="Load poses from data/components/poses/ instead of recomputing.")
+@click.option("--use-cached-masks", is_flag=True, default=False, help="Load masks from data/components/masks/ instead of recomputing.")
+def run(filename: str, frames: int | None, disable_masking: bool, random_strings: bool, debug_masks: bool,
+        only_poses: bool, only_masks: bool, use_cached_poses: bool, use_cached_masks: bool) -> None:
     input_dir = Path("data/input")
 
     if Path(filename).suffix:
@@ -35,7 +40,17 @@ def run(filename: str, frames: int | None, disable_masking: bool, random_strings
     stem = input_path.stem
     output_path = Path("data/output") / f"{stem}.mp4"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    process_video(str(input_path), str(output_path), frames=frames, disable_masking=disable_masking, random_strings=random_strings, debug_masks=debug_masks)
+    process_video(
+        str(input_path), str(output_path),
+        frames=frames,
+        disable_masking=disable_masking,
+        random_strings=random_strings,
+        debug_masks=debug_masks,
+        only_poses=only_poses,
+        only_masks=only_masks,
+        use_cached_poses=use_cached_poses,
+        use_cached_masks=use_cached_masks,
+    )
 
 
 @main.command()

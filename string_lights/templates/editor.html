@@ -9,9 +9,10 @@
 
 <div id="toolbar">
   <label>Interval (ms) <input type="number" id="interval" value="250" min="1" max="10000" step="1"></label>
-  <label>File <input type="text" id="filename" value="clip1" placeholder="clip1"></label>
+  <label>File <select id="filename"></select></label>
   <button id="export-btn">Export .npy</button>
   <button id="clear-btn">Clear</button>
+  <span id="status" class="status"></span>
   <span class="hint">click/drag = pluck &nbsp;|&nbsp; right-click = clear &nbsp;|&nbsp; Space = play/pause &nbsp;|&nbsp; ←→ = step interval &nbsp;|&nbsp; Enter = rewind &nbsp;|&nbsp; q w e a s d = toggle string</span>
 </div>
 
@@ -25,7 +26,10 @@
 </div>
 
 <div id="video-section">
-  <video id="video" controls></video>
+  <div id="video-stage">
+    <video id="video" controls></video>
+    <canvas id="overlay"></canvas>
+  </div>
 </div>
 
 <script src="/static/editor.js"></script>

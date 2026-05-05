@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import subprocess
 from pathlib import Path
-from typing import Generator
+from typing import Generator, Iterator
 
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
 from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, MASK_FRAME_SKIP
@@ -11,6 +11,38 @@ from .pose import estimate_pose, is_pose_valid, compute_median_pose, Pose
 from .audio import get_strings_to_highlight, get_random_strings
 from .strings import draw_strings_frame
 
+
+COMPONENTS_DIR = Path("data/components")
+
+
+def poses_path(stem: str) -> Path:
+    return COMPONENTS_DIR / "poses" / f"{stem}.npz"
+
+
+def masks_path(stem: str) -> Path:
+    return COMPONENTS_DIR / "masks" / f"{stem}.npz"
+
+
+def _video_meta(cap: cv2.VideoCapture, frames: int | None = None) -> dict:
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if frames is not None:
+        total = min(total, frames)
+    return {"w": w, "h": h, "fps": fps, "total": total}
+
+
+def _stream_frames(cap: cv2.VideoCapture, total: int) -> Generator[np.ndarray, None, None]:
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    for _ in range(total):
+        ret, frame = cap.read()
+        if not ret:
+            return
+        yield frame
+
+
+# ── Pose stage ─────────────────────────────────────────────────────────────
 
 def pass1_raw_poses(cap: cv2.VideoCapture, total: int, detector: cv2.aruco.ArucoDetector, id_to_3d: dict[int, np.ndarray], K: np.ndarray) -> list[Pose]:
     raw = []
@@ -71,67 +103,272 @@ def pass2_resolve_poses(raw_poses: list[Pose], mode: PoseResolution = POSE_RESOL
     return resolved
 
 
-def _stream_frames(cap: cv2.VideoCapture, total: int) -> Generator[np.ndarray, None, None]:
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    for _ in range(total):
-        ret, frame = cap.read()
-        if not ret:
-            return
-        yield frame
+def compute_poses(input_path: str, frames: int | None = None) -> tuple[list[Pose], dict]:
+    cap = cv2.VideoCapture(input_path)
+    meta = _video_meta(cap, frames)
+    K = camera_matrix(meta["w"], meta["h"])
+    adict, id_to_3d = build_board()
+    detector = make_detector(adict)
+    raw = pass1_raw_poses(cap, meta["total"], detector, id_to_3d, K)
+    resolved = pass2_resolve_poses(raw)
+    cap.release()
+    detected = sum(1 for r, _ in resolved if r is not None)
+    print(f"  pose pass complete: stable in {detected}/{meta['total']} frames")
+    return resolved, meta
 
 
-def _stream_with_masks(
-    frames: Generator[np.ndarray, None, None],
-    w: int, h: int,
+def save_poses(stem: str, poses: list[Pose], meta: dict) -> Path:
+    path = poses_path(stem)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    n = len(poses)
+    rvecs = np.full((n, 3), np.nan, dtype=np.float64)
+    tvecs = np.full((n, 3), np.nan, dtype=np.float64)
+    for i, (r, t) in enumerate(poses):
+        if r is not None:
+            rvecs[i] = np.asarray(r).flatten()
+            tvecs[i] = np.asarray(t).flatten()
+    np.savez_compressed(
+        path, rvecs=rvecs, tvecs=tvecs,
+        w=meta["w"], h=meta["h"], fps=meta["fps"], total=meta["total"],
+    )
+    print(f"  poses cached → {path}")
+    return path
+
+
+def load_poses(stem: str) -> tuple[list[Pose], dict]:
+    path = poses_path(stem)
+    data = np.load(path)
+    rvecs = data["rvecs"]
+    tvecs = data["tvecs"]
+    poses: list[Pose] = []
+    for r, t in zip(rvecs, tvecs):
+        if np.any(np.isnan(r)):
+            poses.append((None, None))
+        else:
+            poses.append((r.reshape(3, 1), t.reshape(3, 1)))
+    meta = {
+        "w": int(data["w"]), "h": int(data["h"]),
+        "fps": float(data["fps"]), "total": int(data["total"]),
+    }
+    return poses, meta
+
+
+# ── Mask stage ─────────────────────────────────────────────────────────────
+
+def compute_masks(
+    input_path: str,
+    frames: int | None = None,
     debug_writer: cv2.VideoWriter | None = None,
-) -> Generator[tuple[np.ndarray, np.ndarray], None, None]:
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Compute SAM2 masks at every MASK_FRAME_SKIP-th frame.
+
+    Returns (keyframes (K,h,w) uint8, indices (K,) int32, meta).
+    If `debug_writer` is set, writes overlay for every frame (not just keyframes).
+    """
+    cap = cv2.VideoCapture(input_path)
+    meta = _video_meta(cap, frames)
+    total, h, w = meta["total"], meta["h"], meta["w"]
+
     device = resolve_device()
     gd_processor, gd_model, sam_processor, sam_model = load_models(device)
-    current_mask = np.zeros((h, w), dtype=np.uint8)
-    for i, frame in enumerate(frames):
+
+    indices: list[int] = []
+    masks: list[np.ndarray] = []
+    current = np.zeros((h, w), dtype=np.uint8)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    for i in range(total):
+        ret, frame = cap.read()
+        if not ret:
+            break
         if i % MASK_FRAME_SKIP == 0:
-            current_mask = get_mask(
+            current = get_mask(
                 frame, MASK_PROMPT,
                 gd_processor, gd_model, sam_processor, sam_model,
                 device, BOX_THRESHOLD, TEXT_THRESHOLD,
                 debug_writer=debug_writer,
             )
-        elif debug_writer:
+            indices.append(i)
+            masks.append(current.copy())
+            print(f"  masks: keyframe at {i}/{total} ({len(indices)} total)")
+        elif debug_writer is not None:
             vis = frame.copy()
             overlay = vis.copy()
-            overlay[current_mask.astype(bool)] = (0, 0, 200)
+            overlay[current.astype(bool)] = (0, 0, 200)
             cv2.addWeighted(overlay, 0.4, vis, 0.6, 0, vis)
             debug_writer.write(vis)
-        if (i + 1) % 60 == 0:
-            print(f"  pass3 {i+1}  hand masks")
-        yield frame, current_mask
+    cap.release()
+    if not masks:
+        masks.append(np.zeros((h, w), dtype=np.uint8))
+        indices.append(0)
+    return np.stack(masks).astype(np.uint8), np.array(indices, dtype=np.int32), meta
 
 
-def process_video(input_path: str,
-                  output_path: str,
-                  frames: int | None = None,
-                  disable_masking: bool = False,
-                  random_strings: bool = False,
-                  debug_masks: bool = False) -> None:
-    cap   = cv2.VideoCapture(input_path)
-    w     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps   = cap.get(cv2.CAP_PROP_FPS)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if frames is not None:
-        total = min(total, frames)
+def save_masks(stem: str, masks: np.ndarray, indices: np.ndarray, meta: dict) -> Path:
+    path = masks_path(stem)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path, masks=masks, indices=indices,
+        w=meta["w"], h=meta["h"], fps=meta["fps"], total=meta["total"],
+    )
+    print(f"  masks cached → {path}")
+    return path
 
+
+def load_masks(stem: str) -> tuple[np.ndarray, np.ndarray, dict]:
+    path = masks_path(stem)
+    data = np.load(path)
+    meta = {
+        "w": int(data["w"]), "h": int(data["h"]),
+        "fps": float(data["fps"]), "total": int(data["total"]),
+    }
+    return data["masks"], data["indices"], meta
+
+
+def masks_iter(masks: np.ndarray, indices: np.ndarray, total: int) -> Iterator[np.ndarray]:
+    """Yield one mask per frame, holding each keyframe until the next index."""
+    K = len(indices)
+    cur = 0
+    for i in range(total):
+        while cur + 1 < K and indices[cur + 1] <= i:
+            cur += 1
+        yield masks[cur]
+
+
+# ── Render stage ───────────────────────────────────────────────────────────
+
+def render_video(
+    input_path: str,
+    output_path: str,
+    poses: list[Pose],
+    strings: list[list[int]],
+    meta: dict,
+    masks: tuple[np.ndarray, np.ndarray] | None = None,
+    fast: bool = False,
+    include_audio: bool = True,
+    draw_axes: bool = True,
+) -> None:
+    w, h, fps, total = meta["w"], meta["h"], meta["fps"], meta["total"]
     K = camera_matrix(w, h)
-    adict, id_to_3d = build_board()
-    detector = make_detector(adict)
+    dist = np.zeros(5, dtype=np.float64)
+    axis_len = SQUARE_SIZE * 3
 
-    print(f"Processing {total} frames  ({w}×{h} @ {fps:.0f} fps)  →  {output_path}")
+    cap = cv2.VideoCapture(input_path)
+    frame_stream = _stream_frames(cap, total)
+    if masks is not None:
+        mask_stream = masks_iter(masks[0], masks[1], total)
+    else:
+        empty = np.zeros((h, w), dtype=np.uint8)
+        mask_stream = (empty for _ in range(total))
 
-    raw_poses      = pass1_raw_poses(cap, total, detector, id_to_3d, K)
-    resolved_poses = pass2_resolve_poses(raw_poses)
+    last_active: dict[int, int] = {}
 
-    detected = sum(1 for r, _ in resolved_poses if r is not None)
-    print(f"  pass2 complete: stable pose in {detected}/{total} frames")
+    encode = ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
+    if fast:
+        encode = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-pix_fmt", "yuv420p"]
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "rawvideo", "-vcodec", "rawvideo",
+        "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", f"{fps:.6f}",
+        "-i", "pipe:0",
+    ]
+    if include_audio:
+        cmd += ["-i", input_path, "-map", "0:v:0", "-map", "1:a?", "-c:a", "copy", "-shortest"]
+    cmd += [*encode, output_path]
+
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        for i, (frame, mask) in enumerate(zip(frame_stream, mask_stream)):
+            if i >= len(poses):
+                break
+            rvec, tvec = poses[i]
+            original = frame.copy() if mask.any() else None
+            if draw_axes and rvec is not None:
+                cv2.drawFrameAxes(frame, K, dist, rvec, tvec, axis_len)
+            draw_strings_frame(frame, i, rvec, tvec, strings[i], last_active, K, fps)
+            if original is not None:
+                frame[mask.astype(bool)] = original[mask.astype(bool)]
+            proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+        proc.stdin.close()
+    except BrokenPipeError:
+        pass
+    cap.release()
+    stderr = proc.stderr.read().decode(errors="replace")
+    if proc.wait() != 0:
+        raise RuntimeError(f"ffmpeg failed:\n{stderr}")
+
+
+# ── Top-level orchestration ────────────────────────────────────────────────
+
+def process_video(
+    input_path: str,
+    output_path: str,
+    frames: int | None = None,
+    disable_masking: bool = False,
+    random_strings: bool = False,
+    debug_masks: bool = False,
+    only_poses: bool = False,
+    only_masks: bool = False,
+    use_cached_poses: bool = False,
+    use_cached_masks: bool = False,
+) -> None:
+    stem = Path(input_path).stem
+
+    if debug_masks:
+        debug_out = str(Path(output_path).with_suffix("").with_suffix("")) + ".debug.mp4"
+        cap = cv2.VideoCapture(input_path)
+        meta = _video_meta(cap, frames)
+        cap.release()
+        total = meta["total"]
+        debug_writer = cv2.VideoWriter(
+            debug_out, cv2.VideoWriter_fourcc(*"mp4v"), meta["fps"], (meta["w"], meta["h"])
+        )
+        try:
+            if use_cached_masks and masks_path(stem).exists():
+                print(f"  using cached masks ← {masks_path(stem)}")
+                masks_arr, indices, _ = load_masks(stem)
+                cap2 = cv2.VideoCapture(input_path)
+                for frame, mask in zip(_stream_frames(cap2, total), masks_iter(masks_arr, indices, total)):
+                    vis = frame.copy()
+                    overlay = vis.copy()
+                    overlay[mask.astype(bool)] = (0, 0, 200)
+                    cv2.addWeighted(overlay, 0.4, vis, 0.6, 0, vis)
+                    debug_writer.write(vis)
+                cap2.release()
+            else:
+                compute_masks(input_path, frames=frames, debug_writer=debug_writer)
+        finally:
+            debug_writer.release()
+        print(f"Done.  Debug video → {debug_out}")
+        return
+
+    only_mode = only_poses or only_masks
+
+    poses: list[Pose] | None = None
+    meta: dict | None = None
+
+    # Pose stage: always run unless --use-cached-poses (and not --masks-only)
+    if only_poses or (not only_mode and not use_cached_poses):
+        poses, meta = compute_poses(input_path, frames)
+        save_poses(stem, poses, meta)
+    elif not only_mode and use_cached_poses:
+        if not poses_path(stem).exists():
+            raise FileNotFoundError(f"No cached poses at {poses_path(stem)}")
+        print(f"  using cached poses ← {poses_path(stem)}")
+        poses, meta = load_poses(stem)
+        if frames is not None:
+            meta = {**meta, "total": min(meta["total"], frames)}
+            poses = poses[:meta["total"]]
+
+    # --masks: just compute & cache masks
+    if only_masks:
+        masks_arr, indices, mmeta = compute_masks(input_path, frames=frames)
+        save_masks(stem, masks_arr, indices, mmeta)
+
+    if only_mode:
+        return
+
+    total, fps = meta["total"], meta["fps"]
 
     npy_path = Path(input_path).with_suffix(".npy")
     if random_strings or not npy_path.exists():
@@ -141,57 +378,19 @@ def process_video(input_path: str,
     else:
         strings = get_strings_to_highlight(input_path, total, fps)
 
-    debug_writer = None
-    if debug_masks:
-        debug_out = str(Path(output_path).with_suffix("").with_suffix("")) + ".debug.mp4"
-        debug_writer = cv2.VideoWriter(debug_out, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
-
-    empty_mask = np.zeros((h, w), dtype=np.uint8)
-    if disable_masking:
-        frames_masks = ((frame, empty_mask) for frame in _stream_frames(cap, total))
-    else:
-        frames_masks = _stream_with_masks(_stream_frames(cap, total), w, h, debug_writer)
-
-    dist     = np.zeros(5, dtype=np.float64)
-    axis_len = SQUARE_SIZE * 3
-    last_active: dict[int, int] = {}
-
-    try:
-        if not debug_masks:
-            ffmpeg_cmd = [
-                "ffmpeg", "-y",
-                "-f", "rawvideo", "-vcodec", "rawvideo",
-                "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", f"{fps:.6f}",
-                "-i", "pipe:0",
-                "-i", input_path,
-                "-map", "0:v:0", "-map", "1:a?",
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                "-c:a", "copy", "-shortest",
-                output_path,
-            ]
-            proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-            try:
-                for frame_idx, (frame, mask) in enumerate(frames_masks):
-                    original = frame.copy()
-                    rvec, tvec = resolved_poses[frame_idx]
-                    if rvec is not None:
-                        cv2.drawFrameAxes(frame, K, dist, rvec, tvec, axis_len)
-                    draw_strings_frame(frame, frame_idx, rvec, tvec, strings[frame_idx], last_active, K, fps)
-                    if mask.any():
-                        frame[mask.astype(bool)] = original[mask.astype(bool)]
-                    proc.stdin.write(np.ascontiguousarray(frame).tobytes())
-                proc.stdin.close()
-            except BrokenPipeError:
-                pass
-            stderr = proc.stderr.read().decode(errors="replace")
-            if proc.wait() != 0:
-                raise RuntimeError(f"ffmpeg failed:\n{stderr}")
+    masks_data = None
+    if not disable_masking:
+        if use_cached_masks:
+            if not masks_path(stem).exists():
+                raise FileNotFoundError(f"No cached masks at {masks_path(stem)}")
+            print(f"  using cached masks ← {masks_path(stem)}")
+            masks_arr, indices, _ = load_masks(stem)
         else:
-            for _ in frames_masks:
-                pass
-    finally:
-        if debug_writer:
-            debug_writer.release()
+            masks_arr, indices, mmeta = compute_masks(input_path, frames=frames)
+            save_masks(stem, masks_arr, indices, mmeta)
+        masks_data = (masks_arr, indices)
 
-    cap.release()
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    render_video(input_path, output_path, poses, strings, meta, masks=masks_data)
+    detected = sum(1 for r, _ in poses if r is not None)
     print(f"Done.  Board pose found in {detected}/{total} frames ({100*detected//total}%).")
