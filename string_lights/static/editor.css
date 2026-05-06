@@ -79,6 +79,17 @@ body {
   top: 0; bottom: 0;
   left: -8px; right: -8px;
 }
+#selection {
+  position: absolute;
+  top: 0; bottom: 0;
+  display: none;
+  background: rgba(100, 160, 255, 0.18);
+  border-left: 1px solid rgba(100,160,255,0.6);
+  border-right: 1px solid rgba(100,160,255,0.6);
+  pointer-events: none;
+  z-index: 3;
+}
+
 #playhead::after {
   content: '';
   position: absolute;

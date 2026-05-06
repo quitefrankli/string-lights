@@ -65,6 +65,14 @@ def create_app() -> Flask:
         return send_file(buf, mimetype="application/octet-stream",
                          as_attachment=True, download_name=f"{filename}.npy")
 
+    @app.route("/load/<stem>")
+    def load_npy(stem):
+        p = INPUT_DIR / (stem + ".npy")
+        if not p.exists():
+            return "Not found", 404
+        arr = np.load(p)
+        return jsonify({"frames": arr.tolist()})
+
     @app.route("/strings/<stem>")
     def string_projections(stem):
         from .pipeline import load_poses, poses_path

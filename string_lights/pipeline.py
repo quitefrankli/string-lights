@@ -325,7 +325,8 @@ def render_video(
         "-i", "pipe:0",
     ]
     if include_audio:
-        cmd += ["-i", input_path, "-map", "0:v:0", "-map", "1:a?", "-c:a", "copy", "-shortest"]
+        duration = total / fps
+        cmd += ["-i", input_path, "-map", "0:v:0", "-map", "1:a?", "-c:a", "copy", "-t", f"{duration:.6f}"]
     cmd += [*encode, output_path]
 
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)

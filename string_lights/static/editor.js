@@ -60,6 +60,7 @@ function buildUI() {
 
   renderGrid();
   updatePlayhead();
+  loadNpy(currentStem());
 }
 
 // ── Rendering ──────────────────────────────────────────────────────────────
@@ -77,6 +78,20 @@ function renderGrid() {
   STRINGS.forEach((_, si) => {
     for (let c = 0; c < numCols; c++) renderCell(si, c);
   });
+}
+
+async function loadNpy(stem) {
+  const r = await fetch('/load/' + stem);
+  if (!r.ok) return;
+  const { frames } = await r.json();
+  for (let col = 0; col < numCols; col++) {
+    const f = col * FRAMES_PER_COL;
+    if (f >= frames.length) break;
+    for (let si = 0; si < STRINGS.length; si++) {
+      grid[si][col] = frames[f][si];
+    }
+  }
+  renderGrid();
 }
 
 // ── Playhead ───────────────────────────────────────────────────────────────
@@ -100,11 +115,14 @@ video.addEventListener('seeked', updatePlayhead);
 
 // ── Playhead dragging ──────────────────────────────────────────────────────
 
-function clientXToTime(clientX) {
+function clientXToCol(clientX) {
   const wrapRect = gridWrap.getBoundingClientRect();
   const x = clientX - wrapRect.left - labelsEl.offsetWidth + gridWrap.scrollLeft;
-  const col = Math.max(0, Math.floor(x / CELL_W));
-  return col * COL_DUR;
+  return Math.max(0, Math.min(numCols - 1, Math.floor(x / CELL_W)));
+}
+
+function clientXToTime(clientX) {
+  return clientXToCol(clientX) * COL_DUR;
 }
 
 let draggingPlayhead = false;
@@ -120,11 +138,36 @@ document.addEventListener('mousemove', e => {
   video.currentTime = clientXToTime(e.clientX);
 });
 
-// ── Seek by clicking time ruler ────────────────────────────────────────────
+// ── Seek by clicking time ruler / drag to select ──────────────────────────
 
-document.getElementById('time-numbers').addEventListener('click', e => {
-  if (draggingPlayhead) return;
-  video.currentTime = clientXToTime(e.clientX);
+const selEl = document.getElementById('selection');
+let selStart = null;
+let selEnd = null;
+let copyBuffer = null;
+let selectingRange = false;
+
+function updateSelectionEl() {
+  if (selStart === null) { selEl.style.display = 'none'; return; }
+  const c0 = Math.min(selStart, selEnd ?? selStart);
+  const c1 = Math.max(selStart, selEnd ?? selStart);
+  selEl.style.display = 'block';
+  selEl.style.left = (c0 * CELL_W) + 'px';
+  selEl.style.width = ((c1 - c0 + 1) * CELL_W) + 'px';
+}
+
+const timeNumbers = document.getElementById('time-numbers');
+timeNumbers.addEventListener('mousedown', e => {
+  e.preventDefault();
+  selectingRange = true;
+  selStart = clientXToCol(e.clientX);
+  selEnd = selStart;
+  updateSelectionEl();
+});
+
+document.addEventListener('mousemove', e => {
+  if (!selectingRange) return;
+  selEnd = clientXToCol(e.clientX);
+  updateSelectionEl();
 });
 
 // ── Cell painting ──────────────────────────────────────────────────────────
@@ -161,14 +204,24 @@ document.getElementById('rows').addEventListener('mouseover', e => {
   renderCell(si, c);
 });
 
-document.addEventListener('mouseup', () => {
+document.addEventListener('mouseup', e => {
   if (painting && snapshotBeforePaint) history.push(snapshotBeforePaint);
   snapshotBeforePaint = null;
   painting = false;
   draggingPlayhead = false;
+  if (selectingRange) {
+    selectingRange = false;
+    const col = clientXToCol(e.clientX);
+    if (selStart === col) {
+      // plain click — seek and clear selection
+      video.currentTime = col * COL_DUR;
+      selStart = null;
+      updateSelectionEl();
+    }
+  }
 });
 
-const STRING_KEYS = { q: 0, w: 1, e: 2, a: 3, s: 4, d: 5 };
+const STRING_KEYS = { q: 5, w: 4, e: 3, r: 2, t: 1, y: 0 };
 
 function isInputFocused() {
   const t = document.activeElement?.tagName;
@@ -209,6 +262,42 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft') {
     e.preventDefault();
     video.currentTime = Math.max(video.currentTime - intervalSec, 0);
+    return;
+  }
+
+  if ((e.key === 'd' || e.key === 'a') && video.paused) {
+    const c = Math.floor(video.currentTime / COL_DUR);
+    history.push(snapshot());
+    for (let si = 0; si < STRINGS.length; si++) {
+      if (e.key === 'd') {
+        for (let col = numCols - 1; col > c; col--) grid[si][col] = grid[si][col - 1];
+        grid[si][c] = 0;
+      } else {
+        for (let col = c; col < numCols - 1; col++) grid[si][col] = grid[si][col + 1];
+        grid[si][numCols - 1] = 0;
+      }
+    }
+    renderGrid();
+    return;
+  }
+
+  if (e.key === 'c' && selStart !== null) {
+    const c0 = Math.min(selStart, selEnd ?? selStart);
+    const c1 = Math.max(selStart, selEnd ?? selStart);
+    copyBuffer = STRINGS.map((_, si) => grid[si].slice(c0, c1 + 1));
+    return;
+  }
+
+  if (e.key === 'v' && copyBuffer !== null && video.paused) {
+    const c = Math.floor(video.currentTime / COL_DUR);
+    history.push(snapshot());
+    const width = copyBuffer[0].length;
+    for (let si = 0; si < STRINGS.length; si++) {
+      for (let i = 0; i < width && c + i < numCols; i++) {
+        grid[si][c + i] = copyBuffer[si][i];
+      }
+    }
+    renderGrid();
     return;
   }
 
@@ -315,7 +404,7 @@ document.getElementById('export-btn').addEventListener('click', async () => {
 
 // ── Live string overlay ────────────────────────────────────────────────────
 
-const HOLD_DURATION = 0.8;
+const HOLD_DURATION = 0.25;
 const STRING_COLOR = '#00ff00';
 const STRING_WIDTH = 4;
 
@@ -377,7 +466,7 @@ function drawOverlay() {
   octx.lineCap = 'round';
   for (let si = 0; si < 6; si++) {
     if (!isLit(si, t)) continue;
-    const [x0, y0, x1, y1] = lines[si];
+    const [x0, y0, x1, y1] = lines[STRINGS.length - 1 - si];
     octx.beginPath();
     octx.moveTo(x0, y0);
     octx.lineTo(x1, y1);

@@ -59,5 +59,5 @@ def get_strings_to_highlight(input_path: str, total_frames: int, video_fps: floa
             strings.append([])
             continue
         row = tab[ai]
-        strings.append([s for s in range(6) if row[s] > 0])
+        strings.append([5 - s for s in range(6) if row[s] > 0])
     return strings
