@@ -1,8 +1,12 @@
 import cv2
+import json
 import numpy as np
 import subprocess
+import threading
 from pathlib import Path
 from typing import Generator, Iterator
+
+from tqdm import tqdm
 
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
 from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, MASK_FRAME_SKIP, SMOOTH_POSES, T_MIN_CUTOFF, T_BETA, R_MIN_CUTOFF, R_BETA, MAX_TRANSLATION_JUMP, MAX_ROTATION_JUMP
@@ -35,11 +39,45 @@ def masks_cached(stem: str) -> bool:
     return masks_path(stem).exists() and masks_meta_path(stem).exists()
 
 
-def _video_meta(cap: cv2.VideoCapture, frames: int | None = None) -> dict:
+def _ffprobe_meta(path: str) -> dict | None:
+    """Probe accurate avg_frame_rate, nb_frames, duration via ffprobe."""
+    try:
+        out = subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=avg_frame_rate,nb_frames,duration",
+            "-of", "json", path,
+        ], stderr=subprocess.DEVNULL)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    streams = json.loads(out).get("streams") or []
+    if not streams:
+        return None
+    s = streams[0]
+    fps = None
+    fr = s.get("avg_frame_rate", "0/0")
+    if "/" in fr:
+        num, den = fr.split("/")
+        if float(den):
+            fps = float(num) / float(den)
+    nb = s.get("nb_frames")
+    nb_frames = int(nb) if isinstance(nb, str) and nb.isdigit() else None
+    dur = s.get("duration")
+    duration = float(dur) if isinstance(dur, str) else None
+    return {"fps": fps, "nb_frames": nb_frames, "duration": duration}
+
+
+def _video_meta(cap: cv2.VideoCapture, frames: int | None = None, path: str | None = None) -> dict:
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if path is not None:
+        probe = _ffprobe_meta(path)
+        if probe is not None:
+            if probe["fps"]:
+                fps = probe["fps"]
+            if probe["nb_frames"]:
+                total = probe["nb_frames"]
     if frames is not None:
         total = min(total, frames)
     return {"w": w, "h": h, "fps": fps, "total": total}
@@ -66,7 +104,7 @@ def pass1_raw_poses(cap: cv2.VideoCapture, total: int, detector: cv2.aruco.Aruco
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         raw.append(estimate_pose(gray, detector, id_to_3d, K))
         if (i + 1) % 60 == 0:
-            found = sum(1 for r, t in raw if r is not None)
+            found = sum(1 for r, _ in raw if r is not None)
             print(f"  pass1 {i+1}/{total} raw detections: {found}")
     return raw
 
@@ -133,7 +171,7 @@ def pass2_resolve_poses(raw_poses: list[Pose], mode: PoseResolution = POSE_RESOL
 
 def compute_poses(input_path: str, frames: int | None = None) -> tuple[list[Pose], dict]:
     cap = cv2.VideoCapture(input_path)
-    meta = _video_meta(cap, frames)
+    meta = _video_meta(cap, frames, path=input_path)
     K = camera_matrix(meta["w"], meta["h"])
     adict, id_to_3d = build_board()
     detector = make_detector(adict)
@@ -195,7 +233,7 @@ def compute_masks(
     all frames in RAM. Returns (keyframes (K,h,w) uint8, indices (K,) int32, meta).
     """
     cap = cv2.VideoCapture(input_path)
-    meta = _video_meta(cap, frames)
+    meta = _video_meta(cap, frames, path=input_path)
     total, h, w = meta["total"], meta["h"], meta["w"]
 
     device = resolve_device()
@@ -298,6 +336,7 @@ def render_video(
     fast: bool = False,
     include_audio: bool = True,
     draw_axes: bool = True,
+    truncate_audio: bool = False,
 ) -> None:
     w, h, fps, total = meta["w"], meta["h"], meta["fps"], meta["total"]
     K = camera_matrix(w, h)
@@ -325,11 +364,19 @@ def render_video(
         "-i", "pipe:0",
     ]
     if include_audio:
-        duration = total / fps
-        cmd += ["-i", input_path, "-map", "0:v:0", "-map", "1:a?", "-c:a", "copy", "-t", f"{duration:.6f}"]
+        cmd += ["-i", input_path, "-map", "0:v:0", "-map", "1:a?", "-c:a", "copy"]
+        if truncate_audio:
+            duration = total / fps
+            cmd += ["-t", f"{duration:.6f}"]
     cmd += [*encode, output_path]
 
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    stderr_chunks: list[bytes] = []
+    stderr_thread = threading.Thread(
+        target=lambda: stderr_chunks.append(proc.stderr.read()), daemon=True
+    )
+    stderr_thread.start()
+    pbar = tqdm(total=min(total, len(poses)), desc="render", unit="f")
     try:
         for i, (frame, mask) in enumerate(zip(frame_stream, mask_stream)):
             if i >= len(poses):
@@ -342,12 +389,17 @@ def render_video(
             if original is not None:
                 frame[mask.astype(bool)] = original[mask.astype(bool)]
             proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+            pbar.update(1)
         proc.stdin.close()
     except BrokenPipeError:
         pass
+    finally:
+        pbar.close()
     cap.release()
-    stderr = proc.stderr.read().decode(errors="replace")
-    if proc.wait() != 0:
+    rc = proc.wait()
+    stderr_thread.join()
+    stderr = b"".join(stderr_chunks).decode(errors="replace")
+    if rc != 0:
         raise RuntimeError(f"ffmpeg failed:\n{stderr}")
 
 
@@ -370,7 +422,7 @@ def process_video(
     if debug_masks:
         debug_out = str(Path(output_path).with_suffix("").with_suffix("")) + ".debug.mp4"
         cap = cv2.VideoCapture(input_path)
-        meta = _video_meta(cap, frames)
+        meta = _video_meta(cap, frames, path=input_path)
         cap.release()
         total = meta["total"]
         debug_writer = cv2.VideoWriter(
@@ -409,6 +461,9 @@ def process_video(
             raise FileNotFoundError(f"No cached poses at {poses_path(stem)}")
         print(f"  using cached poses ← {poses_path(stem)}")
         poses, meta = load_poses(stem)
+        probe = _ffprobe_meta(input_path)
+        if probe is not None and probe["fps"]:
+            meta = {**meta, "fps": probe["fps"]}
         if frames is not None:
             meta = {**meta, "total": min(meta["total"], frames)}
             poses = poses[:meta["total"]]
@@ -449,6 +504,7 @@ def process_video(
                              r_min_cutoff=R_MIN_CUTOFF, r_beta=R_BETA)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    render_video(input_path, output_path, poses, strings, meta, masks=masks_data)
+    render_video(input_path, output_path, poses, strings, meta, masks=masks_data,
+                 truncate_audio=frames is not None)
     detected = sum(1 for r, _ in poses if r is not None)
     print(f"Done.  Board pose found in {detected}/{total} frames ({100*detected//total}%).")

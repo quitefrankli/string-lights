@@ -12,6 +12,7 @@ dependencies = [
     "Pillow>=10.0",
     "flask>=3.0",
     "torchvision>=0.15",
+    "tqdm>=4.66",
 ]
 
 [tool.uv]
