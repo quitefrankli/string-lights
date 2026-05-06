@@ -1,8 +1,6 @@
 import cv2
 import numpy as np
 
-from .config import MAX_TRANSLATION_JUMP
-
 Pose = tuple[np.ndarray | None, np.ndarray | None]
 
 
@@ -120,15 +118,11 @@ def estimate_pose(gray: np.ndarray, detector: cv2.aruco.ArucoDetector, id_to_3d:
     return (rvec, tvec) if ok else (None, None)
 
 
-def compute_median_pose(raw_poses: list[Pose]) -> np.ndarray | None:
-    origins = []
-    for rvec, tvec in raw_poses:
-        if rvec is not None:
-            origins.append(tvec.flatten())
-    if not origins:
-        return None
-    return np.median(origins, axis=0)
-
-
-def is_pose_valid(tvec: np.ndarray, median_origin: np.ndarray) -> bool:
-    return np.linalg.norm(tvec.flatten() - median_origin) < MAX_TRANSLATION_JUMP
+def pose_jump(prev: Pose, cur: Pose) -> tuple[float, float]:
+    """Translation (metres) and rotation (radians) distance between two poses."""
+    dt = float(np.linalg.norm(cur[1].flatten() - prev[1].flatten()))
+    R_prev = cv2.Rodrigues(prev[0])[0]
+    R_cur = cv2.Rodrigues(cur[0])[0]
+    cos_theta = (np.trace(R_cur @ R_prev.T) - 1.0) * 0.5
+    dr = float(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+    return dt, dr

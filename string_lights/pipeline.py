@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Generator, Iterator
 
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
-from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, MASK_FRAME_SKIP, SMOOTH_POSES, T_MIN_CUTOFF, T_BETA, R_MIN_CUTOFF, R_BETA
+from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, MASK_FRAME_SKIP, SMOOTH_POSES, T_MIN_CUTOFF, T_BETA, R_MIN_CUTOFF, R_BETA, MAX_TRANSLATION_JUMP, MAX_ROTATION_JUMP
 from .masking import resolve_device, load_models, get_mask
-from .pose import estimate_pose, is_pose_valid, compute_median_pose, smooth_poses, Pose
+from .pose import estimate_pose, pose_jump, smooth_poses, Pose
 from .audio import get_strings_to_highlight, get_random_strings
 from .strings import draw_strings_frame
 
@@ -20,6 +20,10 @@ def poses_path(stem: str) -> Path:
 
 
 def masks_path(stem: str) -> Path:
+    return COMPONENTS_DIR / "masks" / f"{stem}.npz"
+
+
+def _masks_tmp_path(stem: str) -> Path:
     return COMPONENTS_DIR / "masks" / f"{stem}.npy"
 
 
@@ -70,11 +74,27 @@ def pass1_raw_poses(cap: cv2.VideoCapture, total: int, detector: cv2.aruco.Aruco
 def pass2_resolve_poses(raw_poses: list[Pose], mode: PoseResolution = POSE_RESOLUTION) -> list[Pose]:
     n = len(raw_poses)
 
-    median_origin = compute_median_pose(raw_poses)
+    # Frame-to-frame validation: accept the first valid PnP unconditionally,
+    # then chain — reject any frame whose translation/rotation jump from the
+    # last accepted pose exceeds (per-frame budget × frames since last accept).
     accepted: list[Pose] = []
-    for rvec, tvec in raw_poses:
-        if rvec is not None and median_origin is not None and is_pose_valid(tvec, median_origin):
+    last: Pose = (None, None)
+    last_idx = -1
+    for idx, (rvec, tvec) in enumerate(raw_poses):
+        if rvec is None:
+            accepted.append((None, None))
+            continue
+        if last[0] is None:
             accepted.append((rvec, tvec))
+            last = (rvec, tvec)
+            last_idx = idx
+            continue
+        gap = max(1, idx - last_idx)
+        dt, dr = pose_jump(last, (rvec, tvec))
+        if dt < MAX_TRANSLATION_JUMP * gap and dr < MAX_ROTATION_JUMP * gap:
+            accepted.append((rvec, tvec))
+            last = (rvec, tvec)
+            last_idx = idx
         else:
             accepted.append((None, None))
 
@@ -185,7 +205,7 @@ def compute_masks(
     # If stem given, stream directly to disk via memmap to avoid RAM accumulation.
     n_max = max(1, -(-total // MASK_FRAME_SKIP))  # ceiling division
     if stem is not None:
-        out_path = masks_path(stem)
+        out_path = _masks_tmp_path(stem)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         buf = np.lib.format.open_memmap(str(out_path), mode="w+", dtype=np.uint8, shape=(n_max, h, w))
     else:
@@ -230,23 +250,25 @@ def compute_masks(
     return buf[:k], np.array(indices_list, dtype=np.int32), meta
 
 
-def save_masks(stem: str, indices: np.ndarray, meta: dict) -> Path:
-    # masks .npy is already written to disk by compute_masks (via memmap flush);
-    # only the small metadata file needs to be saved here.
-    npy_path = masks_path(stem)
+def save_masks(stem: str, masks: np.ndarray, indices: np.ndarray, meta: dict) -> Path:
+    npz_path = masks_path(stem)
     meta_path = masks_meta_path(stem)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(str(npz_path), masks=masks)
     np.savez_compressed(
         str(meta_path), indices=indices,
         w=meta["w"], h=meta["h"], fps=meta["fps"], total=meta["total"],
     )
-    print(f"  masks cached → {npy_path}")
-    return npy_path
+    tmp = _masks_tmp_path(stem)
+    if tmp.exists():
+        tmp.unlink()
+    print(f"  masks cached → {npz_path}")
+    return npz_path
 
 
 def load_masks(stem: str) -> tuple[np.ndarray, np.ndarray, dict]:
     data = np.load(str(masks_meta_path(stem)))
-    masks = np.load(str(masks_path(stem)), mmap_mode="r")
+    masks = np.load(str(masks_path(stem)))["masks"]
     meta = {
         "w": int(data["w"]), "h": int(data["h"]),
         "fps": float(data["fps"]), "total": int(data["total"]),
@@ -393,7 +415,7 @@ def process_video(
     # --masks: just compute & cache masks
     if only_masks:
         masks_arr, indices, mmeta = compute_masks(input_path, stem=stem, frames=frames)
-        save_masks(stem, indices, mmeta)
+        save_masks(stem, masks_arr, indices, mmeta)
 
     if only_mode:
         return
@@ -417,7 +439,7 @@ def process_video(
             masks_arr, indices, _ = load_masks(stem)
         else:
             masks_arr, indices, mmeta = compute_masks(input_path, stem=stem, frames=frames)
-            save_masks(stem, indices, mmeta)
+            save_masks(stem, masks_arr, indices, mmeta)
         masks_data = (masks_arr, indices)
 
     if SMOOTH_POSES:
