@@ -3,18 +3,18 @@ import numpy as np
 
 from .config import *
 
-STRING_SPACING = SQUARE_SIZE * STRING_SPACING_FACTOR
-STRING0_OFFSET = np.array([CHARUCO_BOARD_WIDTH * STRING0_OFFSET_X_FACTOR, SQUARE_SIZE * STRING0_OFFSET_Y_FACTOR, 0], dtype=np.float64)
-STRING_LENGTH = CHARUCO_BOARD_WIDTH * STRING_LENGTH_FACTOR
+_BRIDGE_TOP = np.array(STRING_BRIDGE_TOP, dtype=np.float64)
+_BRIDGE_BOT = np.array(STRING_BRIDGE_BOT, dtype=np.float64)
+_NUT_TOP    = np.array(STRING_NUT_TOP,    dtype=np.float64)
+_NUT_BOT    = np.array(STRING_NUT_BOT,    dtype=np.float64)
 
 
 def _project_string(i: int, rvec, tvec, K):
     dist = np.zeros(5, dtype=np.float64)
-    y0 = -STRING0_OFFSET[1] - i * STRING_SPACING * STRING_CONVERGENCE_FACTOR
-    y1 = -STRING0_OFFSET[1] - i * STRING_SPACING
-    p0 = np.array([-STRING0_OFFSET[0], y0, STRING0_OFFSET[2]], dtype=np.float64)
-    p1 = np.array([STRING_LENGTH - STRING0_OFFSET[0], y1, STRING0_OFFSET[2]], dtype=np.float64)
-    pts_2d, _ = cv2.projectPoints(np.array([p0, p1], dtype=np.float64).reshape(-1, 3), rvec, tvec, K, dist)
+    t = i / (NUM_STRINGS - 1) if NUM_STRINGS > 1 else 0.0
+    p_bridge = _BRIDGE_TOP + t * (_BRIDGE_BOT - _BRIDGE_TOP)
+    p_nut    = _NUT_TOP    + t * (_NUT_BOT    - _NUT_TOP)
+    pts_2d, _ = cv2.projectPoints(np.array([p_bridge, p_nut], dtype=np.float64), rvec, tvec, K, dist)
     return tuple(pts_2d[0].ravel().astype(int)), tuple(pts_2d[1].ravel().astype(int))
 
 

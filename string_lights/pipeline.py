@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Generator, Iterator
 
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
-from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, MASK_FRAME_SKIP
+from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, MASK_FRAME_SKIP, SMOOTH_POSES, T_MIN_CUTOFF, T_BETA, R_MIN_CUTOFF, R_BETA
 from .masking import resolve_device, load_models, get_mask
-from .pose import estimate_pose, is_pose_valid, compute_median_pose, Pose
+from .pose import estimate_pose, is_pose_valid, compute_median_pose, smooth_poses, Pose
 from .audio import get_strings_to_highlight, get_random_strings
 from .strings import draw_strings_frame
 
@@ -419,6 +419,11 @@ def process_video(
             masks_arr, indices, mmeta = compute_masks(input_path, stem=stem, frames=frames)
             save_masks(stem, indices, mmeta)
         masks_data = (masks_arr, indices)
+
+    if SMOOTH_POSES:
+        poses = smooth_poses(poses, fps=fps,
+                             t_min_cutoff=T_MIN_CUTOFF, t_beta=T_BETA,
+                             r_min_cutoff=R_MIN_CUTOFF, r_beta=R_BETA)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     render_video(input_path, output_path, poses, strings, meta, masks=masks_data)

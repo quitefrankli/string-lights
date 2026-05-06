@@ -24,6 +24,13 @@ class PoseResolution(Enum):
 
 POSE_RESOLUTION = PoseResolution.HOLD
 
+# Pose smoothing (One-Euro filter, applied after pose resolution, before render)
+SMOOTH_POSES = True
+T_MIN_CUTOFF = 1.0   # Hz; lower = more smoothing of tvec when still
+T_BETA = 10         # responsiveness to fast translation (units: per m/s)
+R_MIN_CUTOFF = 1.0   # Hz; lower = more smoothing of rotation when still
+R_BETA = 5.0         # responsiveness to fast rotation (units: per quat-speed)
+
 # Hand masking
 GD_MODEL_ID = "IDEA-Research/grounding-dino-tiny"
 # SAM2_MODEL_ID = "facebook/sam2-hiera-small"
@@ -43,9 +50,10 @@ STRING_CORE_COLOR = (255, 255, 255)
 STRING_ALPHA = 0.8
 FADE_DURATION = 0.5  # seconds
 
-# generate with `tuner`
-STRING_SPACING_FACTOR = 0.4
-STRING0_OFFSET_X_FACTOR = -1.72
-STRING0_OFFSET_Y_FACTOR = 0.65
-STRING_LENGTH_FACTOR = 6.63
-STRING_CONVERGENCE_FACTOR = 1.55
+# Four corner points of the string array, in board coordinates (metres).
+# String i endpoint = lerp(top, bot, i / (NUM_STRINGS - 1)) at each end.
+# Generate with `tuner` (drag corners on image).
+STRING_BRIDGE_TOP = (0.162169, -0.010443, 0.000000)
+STRING_BRIDGE_BOT = (0.154770, -0.065316, 0.000000)
+STRING_NUT_TOP = (0.723749, -0.011446, 0.000000)
+STRING_NUT_BOT = (0.720588, -0.053277, 0.000000)

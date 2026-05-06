@@ -2,18 +2,20 @@ import cv2
 import numpy as np
 
 from .config import (
-    SQUARE_SIZE, CHARUCO_BOARD_WIDTH, NUM_STRINGS,
-    STRING_SPACING_FACTOR, STRING0_OFFSET_X_FACTOR, STRING0_OFFSET_Y_FACTOR,
-    STRING_LENGTH_FACTOR, STRING_CONVERGENCE_FACTOR,
-    STRING_COLOR, STRING_CORE_COLOR, STRING_ALPHA,
+    SQUARE_SIZE, NUM_STRINGS,
+    STRING_BRIDGE_TOP, STRING_BRIDGE_BOT, STRING_NUT_TOP, STRING_NUT_BOT,
 )
+
+LINE_COLOR = (0, 255, 0)
+LINE_WIDTH = 4
 from .board import build_board, make_detector, camera_matrix
 from .pose import estimate_pose
 
 WIN = "String Tuner"
 
-
 SAMPLE_COUNT = 20
+HANDLE_RADIUS = 9
+HIT_RADIUS = 18
 
 
 def _find_posed_frame(path: str):
@@ -48,56 +50,42 @@ def _find_posed_frame(path: str):
     return frame, rvec, tvec, K
 
 
-def _render(frame, rvec, tvec, K, spacing_f, offset_x_f, offset_y_f, length_f, convergence_f):
+def _project(p3d: np.ndarray, rvec, tvec, K) -> tuple[int, int]:
+    pts, _ = cv2.projectPoints(p3d.reshape(1, 3), rvec, tvec, K, np.zeros(5))
+    return tuple(pts[0].ravel().astype(int))
+
+
+def _unproject_to_z0(u: int, v: int, rvec, tvec, K) -> np.ndarray | None:
+    """Intersect the camera ray through pixel (u, v) with the board's z=0 plane.
+    Returns a (3,) point in board coords, or None if the ray is parallel."""
+    K_inv = np.linalg.inv(K)
+    dir_cam = K_inv @ np.array([float(u), float(v), 1.0])
+    R = cv2.Rodrigues(rvec)[0]
+    t = tvec.flatten()
+    origin_board = -R.T @ t          # camera centre in board frame
+    dir_board = R.T @ dir_cam        # ray direction in board frame
+    if abs(dir_board[2]) < 1e-9:
+        return None
+    s = -origin_board[2] / dir_board[2]
+    return origin_board + s * dir_board
+
+
+def _render(frame, rvec, tvec, K, corners: dict[str, np.ndarray]) -> np.ndarray:
     out = frame.copy()
     dist = np.zeros(5, dtype=np.float64)
     cv2.drawFrameAxes(out, K, dist, rvec, tvec, SQUARE_SIZE * 3)
-    spacing = SQUARE_SIZE * spacing_f
-    offset = np.array([CHARUCO_BOARD_WIDTH * offset_x_f, SQUARE_SIZE * offset_y_f, 0], dtype=np.float64)
-    length = CHARUCO_BOARD_WIDTH * length_f
-    h, w = out.shape[:2]
 
-    endpoints = []
-    xs, ys = [], []
+    bt, bb = corners["bridge_top"], corners["bridge_bot"]
+    nt, nb = corners["nut_top"],    corners["nut_bot"]
+
     for i in range(NUM_STRINGS):
-        y0 = -offset[1] - i * spacing * convergence_f
-        y1 = -offset[1] - i * spacing
-        p0 = np.array([-offset[0], y0, offset[2]], dtype=np.float64)
-        p1 = np.array([length - offset[0], y1, offset[2]], dtype=np.float64)
-        pts_2d, _ = cv2.projectPoints(np.array([p0, p1]), rvec, tvec, K, dist)
+        s = i / (NUM_STRINGS - 1) if NUM_STRINGS > 1 else 0.0
+        p_bridge = bt + s * (bb - bt)
+        p_nut    = nt + s * (nb - nt)
+        pts_2d, _ = cv2.projectPoints(np.array([p_bridge, p_nut]), rvec, tvec, K, dist)
         a = tuple(pts_2d[0].ravel().astype(int))
         b = tuple(pts_2d[1].ravel().astype(int))
-        endpoints.append((a, b))
-        xs.extend((a[0], b[0]))
-        ys.extend((a[1], b[1]))
-
-    pad = 18 * 4
-    x0 = max(0, min(xs) - pad)
-    y0_ = max(0, min(ys) - pad)
-    x1 = min(w, max(xs) + pad)
-    y1_ = min(h, max(ys) + pad)
-    rh, rw = y1_ - y0_, x1 - x0
-
-    outer_bloom = np.zeros((rh, rw, 3), dtype=np.uint8)
-    inner_glow = np.zeros((rh, rw, 3), dtype=np.uint8)
-    for a, b in endpoints:
-        color = tuple(int(c * STRING_ALPHA) for c in STRING_COLOR)
-        a_r = (a[0] - x0, a[1] - y0_)
-        b_r = (b[0] - x0, b[1] - y0_)
-        cv2.line(outer_bloom, a_r, b_r, color, 22, cv2.LINE_AA)
-        cv2.line(inner_glow, a_r, b_r, color, 8, cv2.LINE_AA)
-
-    outer_bloom = cv2.GaussianBlur(outer_bloom, (0, 0), sigmaX=18)
-    inner_glow = cv2.GaussianBlur(inner_glow, (0, 0), sigmaX=5)
-
-    roi = out[y0_:y1_, x0:x1]
-    cv2.add(roi, cv2.multiply(outer_bloom, np.array([0.25, 0.25, 0.25, 0], dtype=np.float64)).astype(np.uint8), dst=roi)
-    cv2.add(roi, cv2.multiply(inner_glow, np.array([0.7, 0.7, 0.7, 0], dtype=np.float64)).astype(np.uint8), dst=roi)
-
-    core = out.copy()
-    for a, b in endpoints:
-        cv2.line(core, a, b, STRING_CORE_COLOR, 2, cv2.LINE_AA)
-    cv2.addWeighted(core, STRING_ALPHA, out, 1 - STRING_ALPHA, 0, out)
+        cv2.line(out, a, b, LINE_COLOR, LINE_WIDTH, cv2.LINE_AA)
     return out
 
 
@@ -108,31 +96,59 @@ def run_tuner(input_path: str) -> None:
         return
     frame, rvec, tvec, K = result
 
+    corners: dict[str, np.ndarray] = {
+        "bridge_top": np.array(STRING_BRIDGE_TOP, dtype=np.float64),
+        "bridge_bot": np.array(STRING_BRIDGE_BOT, dtype=np.float64),
+        "nut_top":    np.array(STRING_NUT_TOP,    dtype=np.float64),
+        "nut_bot":    np.array(STRING_NUT_BOT,    dtype=np.float64),
+    }
+
+    state = {"dragging": None, "hover": None}
+
+    def _nearest(u: int, v: int) -> str | None:
+        best, best_d = None, HIT_RADIUS
+        for name, p3d in corners.items():
+            cu, cv_ = _project(p3d, rvec, tvec, K)
+            d = ((u - cu) ** 2 + (v - cv_) ** 2) ** 0.5
+            if d < best_d:
+                best_d = d
+                best = name
+        return best
+
+    def on_mouse(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            state["dragging"] = _nearest(x, y)
+        elif event == cv2.EVENT_LBUTTONUP:
+            state["dragging"] = None
+        elif event == cv2.EVENT_MOUSEMOVE:
+            if state["dragging"] is not None:
+                p = _unproject_to_z0(x, y, rvec, tvec, K)
+                if p is not None:
+                    p[2] = 0.0   # lock to board's z=0 plane
+                    corners[state["dragging"]] = p
+            else:
+                state["hover"] = _nearest(x, y)
+
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
-    # OpenCV trackbars are integer-only; scale ×100
-    cv2.createTrackbar("spacing", WIN, int(STRING_SPACING_FACTOR * 100), 200, lambda _: None)
-    cv2.createTrackbar("offset_x", WIN, int(STRING0_OFFSET_X_FACTOR * 100) + 500, 1500, lambda _: None)
-    cv2.createTrackbar("offset_y", WIN, int(STRING0_OFFSET_Y_FACTOR * 100) + 200, 400, lambda _: None)
-    cv2.createTrackbar("length", WIN, int(STRING_LENGTH_FACTOR * 100), 2000, lambda _: None)
-    cv2.createTrackbar("convergence", WIN, int(STRING_CONVERGENCE_FACTOR * 100), 200, lambda _: None)
+    cv2.setMouseCallback(WIN, on_mouse)
 
     while True:
-        spacing_f = cv2.getTrackbarPos("spacing", WIN) / 100.0
-        offset_x_f = (cv2.getTrackbarPos("offset_x", WIN) - 500) / 100.0
-        offset_y_f = (cv2.getTrackbarPos("offset_y", WIN) - 200) / 100.0
-        length_f = cv2.getTrackbarPos("length", WIN) / 100.0
-        convergence_f = cv2.getTrackbarPos("convergence", WIN) / 100.0
+        rendered = _render(frame, rvec, tvec, K, corners)
+        for name, p3d in corners.items():
+            cu, cv_ = _project(p3d, rvec, tvec, K)
+            if name == state["dragging"]:
+                color = (0, 255, 255)
+            elif name == state["hover"]:
+                color = (0, 220, 0)
+            else:
+                color = (200, 200, 200)
+            cv2.circle(rendered, (cu, cv_), HANDLE_RADIUS, color, -1)
+            cv2.circle(rendered, (cu, cv_), HANDLE_RADIUS + 1, (0, 0, 0), 1)
+            cv2.putText(rendered, name, (cu + 12, cv_ - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 
-        rendered = _render(frame, rvec, tvec, K, spacing_f, offset_x_f, offset_y_f, length_f, convergence_f)
-        labels = [
-            f"1 spacing:      {spacing_f:.2f}",
-            f"2 offset_x:     {offset_x_f:.2f}",
-            f"3 offset_y:     {offset_y_f:.2f}",
-            f"4 length:       {length_f:.2f}",
-            f"5 convergence:  {convergence_f:.2f}",
-        ]
-        for j, txt in enumerate(labels):
-            cv2.putText(rendered, txt, (10, 30 + j * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(rendered, "drag corner handles to align with strings | ESC to quit",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
         cv2.imshow(WIN, rendered)
         key = cv2.waitKey(30) & 0xFF
         if key == 27 or cv2.getWindowProperty(WIN, cv2.WND_PROP_VISIBLE) < 1:
@@ -140,8 +156,6 @@ def run_tuner(input_path: str) -> None:
 
     cv2.destroyAllWindows()
     print("\nFinal values for config.py:")
-    print(f"STRING_SPACING_FACTOR = {spacing_f}")
-    print(f"STRING0_OFFSET_X_FACTOR = {offset_x_f}")
-    print(f"STRING0_OFFSET_Y_FACTOR = {offset_y_f}")
-    print(f"STRING_LENGTH_FACTOR = {length_f}")
-    print(f"STRING_CONVERGENCE_FACTOR = {convergence_f}")
+    for name in ("bridge_top", "bridge_bot", "nut_top", "nut_bot"):
+        p = corners[name]
+        print(f"STRING_{name.upper()} = ({p[0]:.6f}, {p[1]:.6f}, {p[2]:.6f})")
