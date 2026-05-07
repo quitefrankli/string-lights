@@ -337,6 +337,7 @@ def render_video(
     include_audio: bool = True,
     draw_axes: bool = True,
     truncate_audio: bool = False,
+    lyrics: list[dict] | None = None,
 ) -> None:
     w, h, fps, total = meta["w"], meta["h"], meta["fps"], meta["total"]
     K = camera_matrix(w, h)
@@ -386,6 +387,9 @@ def render_video(
             if draw_axes and rvec is not None:
                 cv2.drawFrameAxes(frame, K, dist, rvec, tvec, axis_len)
             draw_strings_frame(frame, i, rvec, tvec, strings[i], last_active, K, fps)
+            if lyrics:
+                from .lyrics import draw_lyrics_frame
+                draw_lyrics_frame(frame, i, fps, lyrics)
             if original is not None:
                 frame[mask.astype(bool)] = original[mask.astype(bool)]
             proc.stdin.write(np.ascontiguousarray(frame).tobytes())
@@ -503,8 +507,11 @@ def process_video(
                              t_min_cutoff=T_MIN_CUTOFF, t_beta=T_BETA,
                              r_min_cutoff=R_MIN_CUTOFF, r_beta=R_BETA)
 
+    from .lyrics import load_lyrics, lyrics_path
+    video_lyrics = load_lyrics(stem) if lyrics_path(stem).exists() else None
+
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     render_video(input_path, output_path, poses, strings, meta, masks=masks_data,
-                 truncate_audio=frames is not None)
+                 truncate_audio=frames is not None, lyrics=video_lyrics or None)
     detected = sum(1 for r, _ in poses if r is not None)
     print(f"Done.  Board pose found in {detected}/{total} frames ({100*detected//total}%).")

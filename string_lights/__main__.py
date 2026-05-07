@@ -89,6 +89,18 @@ def tune(filename: str) -> None:
     run_tuner(str(input_path))
 
 
+@main.command("lyrics-edit")
+@click.option("--port", type=int, default=8081, show_default=True)
+def lyrics_edit(port: int) -> None:
+    import webbrowser, os
+    from .lyrics_editor import create_lyrics_app
+
+    app = create_lyrics_app()
+    if not os.environ.get("WERKZEUG_RUN_MAIN"):
+        webbrowser.open(f"http://localhost:{port}")
+    app.run(host="localhost", port=port, debug=True)
+
+
 @main.command("mask-edit")
 @click.argument("filename")
 def mask_edit(filename: str) -> None:

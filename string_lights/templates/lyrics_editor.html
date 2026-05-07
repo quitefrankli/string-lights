@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Lyrics Editor</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: #1a1a1a; color: #ddd; font-family: monospace; font-size: 13px; }
+body { display: flex; flex-direction: column; overflow: hidden; }
+
+/* ── Toolbar ── */
+#toolbar {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  padding: 8px 14px; background: #111; border-bottom: 1px solid #333;
+}
+#toolbar select, #toolbar input[type=number] {
+  background: #2a2a2a; border: 1px solid #444; color: #ddd;
+  padding: 4px 8px; border-radius: 4px; font-family: monospace; font-size: 13px;
+}
+#toolbar select { min-width: 160px; }
+#toolbar button {
+  padding: 5px 14px; border-radius: 4px; border: none; cursor: pointer;
+  background: #e94560; color: #fff; font-weight: bold; font-size: 13px;
+}
+#toolbar button:hover { background: #c0304a; }
+#add-btn { background: #2a8f4d; }
+#add-btn:hover { background: #1f6b39; }
+#save-btn { background: #2255bb; }
+#save-btn:hover { background: #1a3f99; }
+#render-btn { background: #6633aa; }
+#render-btn:hover { background: #4a2280; }
+#render-btn:disabled { background: #3a2a55; cursor: not-allowed; }
+.status { font-size: 11px; color: #888; }
+.status.ok { color: #2a8f4d; }
+.status.err { color: #e94560; }
+.hint { color: #555; font-size: 11px; margin-left: auto; }
+
+/* ── Main area ── */
+#main {
+  display: flex; flex: 1 1 0; min-height: 0; overflow: hidden;
+}
+
+/* ── Video panel ── */
+#video-panel {
+  flex: 1 1 0; min-width: 0;
+  background: #000;
+  display: flex; align-items: center; justify-content: center;
+  padding: 8px;
+}
+#video-stage {
+  position: relative;
+  max-width: 100%; max-height: 100%;
+  display: inline-block;
+}
+#video {
+  display: block;
+  max-width: 100%; max-height: calc(100vh - 120px - 120px);
+}
+#overlay {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  cursor: default;
+}
+#pos-hint {
+  position: absolute; bottom: 4px; left: 4px;
+  font-size: 10px; color: rgba(255,255,255,0.5);
+  pointer-events: none;
+}
+
+/* ── Lyrics panel ── */
+#lyrics-panel {
+  width: 300px; flex-shrink: 0;
+  background: #1e1e1e; border-left: 1px solid #333;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+#lyric-form {
+  flex-shrink: 0;
+  padding: 12px;
+  border-bottom: 1px solid #333;
+  display: flex; flex-direction: column; gap: 8px;
+}
+#lyric-form.disabled { opacity: 0.4; pointer-events: none; }
+#lyric-text {
+  width: 100%; padding: 6px 8px;
+  background: #2a2a2a; border: 1px solid #555; color: #fff;
+  border-radius: 4px; font-size: 14px; font-family: monospace;
+}
+.form-row { display: flex; align-items: center; gap: 6px; }
+.form-row label { color: #888; width: 38px; flex-shrink: 0; font-size: 11px; }
+.form-row input[type=number] {
+  flex: 1; padding: 4px 6px;
+  background: #2a2a2a; border: 1px solid #444; color: #ddd;
+  border-radius: 4px; font-family: monospace; font-size: 12px;
+}
+.form-row input[type=color] {
+  width: 40px; height: 26px; padding: 1px; border: 1px solid #444;
+  border-radius: 4px; background: #2a2a2a; cursor: pointer;
+}
+.form-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.form-btns button {
+  flex: 1; padding: 5px 4px; border: none; border-radius: 4px;
+  cursor: pointer; font-size: 11px; font-family: monospace; font-weight: bold;
+}
+#set-start-btn { background: #3a6030; color: #8f8; }
+#set-start-btn:hover { background: #2a4a24; }
+#set-end-btn { background: #5a3a20; color: #fa8; }
+#set-end-btn:hover { background: #3a2510; }
+#delete-btn { background: #4a1a1a; color: #f88; }
+#delete-btn:hover { background: #3a1010; }
+
+#lyrics-list {
+  flex: 1 1 0; overflow-y: auto;
+  padding: 6px 0;
+}
+.lyric-item {
+  padding: 8px 12px; cursor: pointer;
+  border-left: 3px solid transparent;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.lyric-item:hover { background: #262626; }
+.lyric-item.selected { background: #252535; border-left-color: #5566ff; }
+.lyric-text { color: #fff; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lyric-time { color: #666; font-size: 10px; }
+.lyric-swatch {
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: 50%; margin-right: 4px; vertical-align: middle;
+}
+
+/* ── Timeline ── */
+#timeline-wrap {
+  height: 80px; flex-shrink: 0;
+  background: #111; border-top: 1px solid #333;
+  overflow-x: auto; overflow-y: hidden;
+  position: relative;
+}
+#timeline-inner {
+  position: relative; height: 100%; min-width: 100%;
+}
+#tl-ruler {
+  height: 24px; position: relative;
+  border-bottom: 1px solid #333;
+  cursor: pointer;
+  user-select: none;
+}
+.tl-tick {
+  position: absolute; bottom: 0; top: 0;
+  display: flex; align-items: flex-end; padding-bottom: 4px;
+  font-size: 9px; color: #555;
+  border-left: 1px solid #333;
+  padding-left: 2px;
+}
+#tl-track {
+  position: relative; height: 56px;
+}
+.tl-block {
+  position: absolute; top: 8px; bottom: 8px;
+  border-radius: 3px; cursor: grab; user-select: none;
+  display: flex; align-items: center; padding: 0 6px;
+  font-size: 10px; color: #fff; overflow: hidden; white-space: nowrap;
+  opacity: 0.85;
+  border: 1px solid rgba(255,255,255,0.15);
+}
+.tl-block:hover { opacity: 1; }
+.tl-block.selected { outline: 2px solid #fff; opacity: 1; }
+#tl-playhead {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  background: #e94560; pointer-events: none; z-index: 10;
+  box-shadow: 0 0 6px rgba(233,69,96,0.7);
+}
+#tl-playhead::after {
+  content: ''; position: absolute; top: 0; left: 50%;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 8px solid #e94560;
+}
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <label>File <select id="filename"></select></label>
+  <button id="add-btn">+ Add</button>
+  <button id="save-btn">Save</button>
+  <button id="render-btn">Render to .lyrics.mp4</button>
+  <span id="status" class="status"></span>
+  <span class="hint">Space=play/pause &nbsp;|&nbsp; [ ] = set start/end &nbsp;|&nbsp; Del = delete &nbsp;|&nbsp; drag text on video to reposition &nbsp;|&nbsp; drag block edges to resize</span>
+</div>
+
+<div id="main">
+  <div id="video-panel">
+    <div id="video-stage">
+      <video id="video"></video>
+      <canvas id="overlay"></canvas>
+      <div id="pos-hint"></div>
+    </div>
+  </div>
+
+  <div id="lyrics-panel">
+    <div id="lyric-form" class="disabled">
+      <input type="text" id="lyric-text" placeholder="Lyric text…">
+      <div class="form-row">
+        <label>Start</label>
+        <input type="number" id="lyric-start" step="0.01" min="0" value="0">
+      </div>
+      <div class="form-row">
+        <label>End</label>
+        <input type="number" id="lyric-end" step="0.01" min="0" value="3">
+      </div>
+      <div class="form-row">
+        <label>X</label>
+        <input type="number" id="lyric-x" step="0.01" min="0" max="1" value="0.5">
+        <label>Y</label>
+        <input type="number" id="lyric-y" step="0.01" min="0" max="1" value="0.85">
+      </div>
+      <div class="form-row">
+        <label>Size</label>
+        <input type="number" id="lyric-size" step="1" min="10" max="300" value="72">
+        <label>Color</label>
+        <input type="color" id="lyric-color" value="#ffffff">
+      </div>
+      <div class="form-row">
+        <label>Jitter</label>
+        <input type="range" id="lyric-jitter" min="0" max="5" step="0.1" value="1" style="flex:1">
+        <span id="jitter-val" style="width:28px;text-align:right;color:#aaa">1.0</span>
+      </div>
+      <div class="form-btns">
+        <button id="set-start-btn">[ Set Start</button>
+        <button id="set-end-btn">] Set End</button>
+        <button id="delete-btn">Delete</button>
+      </div>
+    </div>
+    <div id="lyrics-list"></div>
+  </div>
+</div>
+
+<div id="timeline-wrap">
+  <div id="timeline-inner">
+    <div id="tl-ruler"></div>
+    <div id="tl-track"></div>
+    <div id="tl-playhead"></div>
+  </div>
+</div>
+
+<script src="/static/lyrics_editor.js"></script>
+</body>
+</html>
