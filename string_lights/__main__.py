@@ -89,5 +89,14 @@ def tune(filename: str) -> None:
     run_tuner(str(input_path))
 
 
+@main.command("mask-edit")
+@click.argument("filename")
+def mask_edit(filename: str) -> None:
+    from .mask_editor import run_mask_editor
+
+    stem = Path(filename).stem if Path(filename).suffix else filename
+    run_mask_editor(stem)
+
+
 if __name__ == "__main__":
     main()
