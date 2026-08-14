@@ -13,7 +13,7 @@ from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD,
 from .masking import resolve_device, load_models, get_mask
 from .pose import estimate_pose, pose_jump, smooth_poses, Pose
 from .audio import get_strings_to_highlight, get_random_strings
-from .strings import draw_strings_frame
+from .strings import draw_projected_strings_frame, draw_strings_frame
 
 
 COMPONENTS_DIR = Path("data/components")
@@ -329,10 +329,11 @@ def masks_iter(masks: np.ndarray, indices: np.ndarray, total: int) -> Iterator[n
 def render_video(
     input_path: str,
     output_path: str,
-    poses: list[Pose],
+    poses: list[Pose] | None,
     strings: list[list[int]],
     meta: dict,
     masks: tuple[np.ndarray, np.ndarray] | None = None,
+    projections: np.ndarray | None = None,
     fast: bool = False,
     include_audio: bool = True,
     draw_axes: bool = True,
@@ -376,16 +377,23 @@ def render_video(
         target=lambda: stderr_chunks.append(proc.stderr.read()), daemon=True
     )
     stderr_thread.start()
-    pbar = tqdm(total=min(total, len(poses)), desc="render", unit="f")
+    geometry_count = len(projections) if projections is not None else len(poses or [])
+    render_count = min(total, geometry_count, len(strings))
+    pbar = tqdm(total=render_count, desc="render", unit="f")
     try:
         for i, (frame, mask) in enumerate(zip(frame_stream, mask_stream)):
-            if i >= len(poses):
+            if i >= render_count:
                 break
-            rvec, tvec = poses[i]
             original = frame.copy() if mask.any() else None
-            if draw_axes and rvec is not None:
-                cv2.drawFrameAxes(frame, K, dist, rvec, tvec, axis_len)
-            draw_strings_frame(frame, i, rvec, tvec, strings[i], last_active, K, fps)
+            if projections is not None:
+                draw_projected_strings_frame(
+                    frame, i, projections[i], strings[i], last_active, fps
+                )
+            else:
+                rvec, tvec = poses[i]
+                if draw_axes and rvec is not None:
+                    cv2.drawFrameAxes(frame, K, dist, rvec, tvec, axis_len)
+                draw_strings_frame(frame, i, rvec, tvec, strings[i], last_active, K, fps)
             if original is not None:
                 frame[mask.astype(bool)] = original[mask.astype(bool)]
             proc.stdin.write(np.ascontiguousarray(frame).tobytes())
@@ -415,9 +423,15 @@ def process_video(
     only_poses: bool = False,
     only_masks: bool = False,
     use_cached_poses: bool = False,
+    use_cached_projections: bool = False,
     use_cached_masks: bool = False,
 ) -> None:
     stem = Path(input_path).stem
+
+    if use_cached_poses and use_cached_projections:
+        raise ValueError("cached poses and cached projections are mutually exclusive")
+    if only_poses and use_cached_projections:
+        raise ValueError("pose-only mode cannot use cached projections")
 
     if debug_masks:
         debug_out = str(Path(output_path).with_suffix("").with_suffix("")) + ".debug.mp4"
@@ -450,10 +464,30 @@ def process_video(
     only_mode = only_poses or only_masks
 
     poses: list[Pose] | None = None
+    projections: np.ndarray | None = None
     meta: dict | None = None
 
-    # Pose stage: always run unless --use-cached-poses (and not --masks-only)
-    if only_poses or (not only_mode and not use_cached_poses):
+    if not only_mode and use_cached_projections:
+        from .planar import load_planar_track
+        from .planar_io import projection_path
+
+        path = projection_path(stem)
+        if not path.exists():
+            raise FileNotFoundError(f"No cached projections at {path}")
+        print(f"  using cached planar projections ← {path}")
+        track, meta = load_planar_track(path)
+        projections = track.projected_lines
+
+        cap = cv2.VideoCapture(input_path)
+        video_meta = _video_meta(cap, frames, path=input_path)
+        cap.release()
+        if (meta["w"], meta["h"]) != (video_meta["w"], video_meta["h"]):
+            raise ValueError("cached projection dimensions do not match the input video")
+        if len(projections) < video_meta["total"]:
+            raise ValueError("cached projections do not cover the requested video frames")
+        meta = {**meta, "fps": video_meta["fps"], "total": video_meta["total"]}
+        projections = projections[:meta["total"]]
+    elif only_poses or (not only_mode and not use_cached_poses):
         poses, meta = compute_poses(input_path, frames)
         save_poses(stem, poses, meta)
     elif not only_mode and use_cached_poses:
@@ -498,13 +532,31 @@ def process_video(
             save_masks(stem, masks_arr, indices, mmeta)
         masks_data = (masks_arr, indices)
 
-    if SMOOTH_POSES:
+    if SMOOTH_POSES and poses is not None:
         poses = smooth_poses(poses, fps=fps,
                              t_min_cutoff=T_MIN_CUTOFF, t_beta=T_BETA,
                              r_min_cutoff=R_MIN_CUTOFF, r_beta=R_BETA)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    render_video(input_path, output_path, poses, strings, meta, masks=masks_data,
-                 truncate_audio=frames is not None)
-    detected = sum(1 for r, _ in poses if r is not None)
-    print(f"Done.  Board pose found in {detected}/{total} frames ({100*detected//total}%).")
+    render_video(
+        input_path,
+        output_path,
+        poses,
+        strings,
+        meta,
+        masks=masks_data,
+        projections=projections,
+        truncate_audio=frames is not None,
+    )
+    if projections is not None:
+        observed = int(np.isfinite(projections).all(axis=(1, 2, 3)).sum())
+        print(
+            f"Done.  Planar projection found in {observed}/{total} frames "
+            f"({100 * observed // total}%)."
+        )
+    else:
+        detected = sum(1 for r, _ in poses if r is not None)
+        print(
+            f"Done.  Board pose found in {detected}/{total} frames "
+            f"({100 * detected // total}%)."
+        )

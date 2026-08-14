@@ -29,13 +29,41 @@ def draw_strings_frame(
     fps: float,
     fade: str = "exponential",
 ) -> None:
-    """Draw string overlays for a single frame, mutating last_active in place."""
+    projected_lines = np.array(
+        [_project_string(i, rvec, tvec, K) for i in range(NUM_STRINGS)],
+        dtype=np.float64,
+    ) if rvec is not None else np.full((NUM_STRINGS, 2, 2), np.nan)
+    draw_projected_strings_frame(
+        frame,
+        frame_idx,
+        projected_lines,
+        active,
+        last_active,
+        fps,
+        fade,
+    )
+
+
+def draw_projected_strings_frame(
+    frame: np.ndarray,
+    frame_idx: int,
+    projected_lines: np.ndarray,
+    active: list[int],
+    last_active: dict[int, int],
+    fps: float,
+    fade: str = "exponential",
+) -> None:
+    """Draw already-projected string lines, mutating last_active in place."""
+    lines = np.asarray(projected_lines, dtype=np.float64)
+    if lines.shape != (NUM_STRINGS, 2, 2):
+        raise ValueError(f"projected_lines must have shape ({NUM_STRINGS}, 2, 2)")
+
     fade_frames = int(fps * FADE_DURATION)
 
     for i in active:
         last_active[i] = frame_idx
 
-    if rvec is None:
+    if not np.isfinite(lines).any():
         return
 
     to_draw: list[tuple[int, float]] = []
@@ -59,16 +87,25 @@ def draw_strings_frame(
     endpoints = []
     xs, ys = [], []
     for i, alpha in to_draw:
-        a, b = _project_string(i, rvec, tvec, K)
+        line = lines[i]
+        if not np.isfinite(line).all():
+            continue
+        a = tuple(np.rint(line[0]).astype(int))
+        b = tuple(np.rint(line[1]).astype(int))
         endpoints.append((a, b, alpha))
         xs.extend((a[0], b[0]))
         ys.extend((a[1], b[1]))
 
+    if not endpoints:
+        return
+
     pad = 18 * 4
     x0 = max(0, min(xs) - pad)
     y0 = max(0, min(ys) - pad)
-    x1 = min(w, max(xs) + pad)
-    y1 = min(h, max(ys) + pad)
+    x1 = min(w, max(xs) + pad + 1)
+    y1 = min(h, max(ys) + pad + 1)
+    if x1 <= x0 or y1 <= y0:
+        return
     rh, rw = y1 - y0, x1 - x0
 
     outer_bloom = np.zeros((rh, rw, 3), dtype=np.uint8)
