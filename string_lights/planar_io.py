@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import cv2
@@ -49,7 +50,7 @@ def create_planar_profile_from_annotation(
 
 def track_planar_video(
     video_path: str | Path,
-    profile: PlanarProfile,
+    profile: PlanarProfile | Sequence[PlanarProfile],
 ) -> tuple[PlanarTrack, dict[str, int | float]]:
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():

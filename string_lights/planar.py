@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Iterable
 
 import cv2
 import numpy as np
 
 
 PROFILE_FORMAT_VERSION = 1
-TRACK_FORMAT_VERSION = 1
+TRACK_FORMAT_VERSION = 2
 
 
 class TrackState(StrEnum):
@@ -28,6 +29,10 @@ class PlanarTrackerConfig:
     lowe_ratio: float = 0.74
     ransac_threshold_px: float = 1.5
     max_flow_round_trip_error_px: float = 0.75
+    unresolved_relocalize_interval: int = 5
+    reference_switch_margin: float = 0.15
+    reference_switch_confirm_frames: int = 3
+    reference_memory_frames: int = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,11 +57,13 @@ class PlanarFrame:
     projected_lines: np.ndarray
     state: TrackState
     diagnostics: TrackDiagnostics
+    reference_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PlanarTrack:
     frames: tuple[PlanarFrame, ...]
+    reference_fingerprints: tuple[str, ...] = ()
 
     @property
     def projected_lines(self) -> np.ndarray:
@@ -83,6 +90,28 @@ class _FitResult:
     frame: PlanarFrame
     reference_points: np.ndarray
     frame_points: np.ndarray
+
+
+@dataclass(slots=True)
+class _ReferenceState:
+    profile: PlanarProfile
+    keypoints: tuple[cv2.KeyPoint, ...]
+    descriptors: np.ndarray
+    tracked_reference: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 2), dtype=np.float32)
+    )
+    tracked_frame: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 2), dtype=np.float32)
+    )
+    last_direct_frame: int = -1_000_000
+
+
+@dataclass(slots=True)
+class _ReferenceSelector:
+    active_index: int | None = None
+    pending_index: int | None = None
+    pending_frames: int = 0
+    missing_frames: int = 0
 
 
 def create_planar_profile(
@@ -138,16 +167,36 @@ def save_planar_track(
     frame_count = len(track.frames)
     if int(metadata["total"]) != frame_count:
         raise ValueError("track length must match metadata total")
+    fingerprints = track.reference_fingerprints
+    if frame_count and not fingerprints:
+        raise ValueError("planar track reference provenance is missing")
+    if len(set(fingerprints)) != len(fingerprints):
+        raise ValueError("planar track reference fingerprints must be unique")
+    reference_indices = np.empty(frame_count, dtype=np.int16)
     homographies = np.full((frame_count, 3, 3), np.nan, dtype=np.float64)
     for index, frame in enumerate(track.frames):
-        if frame.homography is not None:
+        if frame.state == TrackState.OBSERVED:
+            if frame.reference_index is None or not (
+                0 <= frame.reference_index < len(fingerprints)
+            ):
+                raise ValueError("observed planar frame has an invalid reference index")
+            if frame.homography is None:
+                raise ValueError("observed planar frame must contain a homography")
+            reference_indices[index] = frame.reference_index
             homographies[index] = frame.homography
+        else:
+            if frame.reference_index is not None:
+                raise ValueError("unresolved planar frame cannot name a reference")
+            reference_indices[index] = -1
     np.savez_compressed(
         target,
         format_version=np.int64(TRACK_FORMAT_VERSION),
+        reference_count=np.int64(len(fingerprints)),
+        reference_fingerprints=np.asarray(fingerprints, dtype=np.str_),
         homographies=homographies,
         lines=track.projected_lines,
         states=np.array([frame.state.value for frame in track.frames]),
+        reference_indices=reference_indices,
         correspondences=np.array(
             [frame.diagnostics.correspondences for frame in track.frames], dtype=np.int32
         ),
@@ -173,11 +222,25 @@ def save_planar_track(
 def load_planar_track(path: str | Path) -> tuple[PlanarTrack, dict[str, int | float]]:
     with np.load(Path(path), allow_pickle=False) as data:
         version = int(data["format_version"])
-        if version != TRACK_FORMAT_VERSION:
+        if version not in (1, TRACK_FORMAT_VERSION):
             raise ValueError(f"unsupported planar track format version: {version}")
         homographies = data["homographies"]
         lines = data["lines"]
         states = data["states"]
+        if version >= 2:
+            if "reference_count" not in data or "reference_fingerprints" not in data:
+                raise ValueError("planar track reference provenance is missing")
+            reference_count = int(data["reference_count"])
+            reference_fingerprints = tuple(
+                str(value) for value in data["reference_fingerprints"]
+            )
+            reference_indices = data["reference_indices"]
+        else:
+            reference_count = 1
+            reference_fingerprints = ("legacy-v1:unknown",)
+            reference_indices = np.where(
+                states.astype(str) == TrackState.OBSERVED.value, 0, -1
+            )
         correspondences = data["correspondences"]
         inliers = data["inliers"]
         ratios = data["inlier_ratios"]
@@ -189,11 +252,33 @@ def load_planar_track(path: str | Path) -> tuple[PlanarTrack, dict[str, int | fl
             "fps": float(data["fps"]),
             "total": int(data["total"]),
         }
-    if len(lines) != metadata["total"]:
+    arrays = (
+        homographies,
+        lines,
+        states,
+        reference_indices,
+        correspondences,
+        inliers,
+        ratios,
+        errors,
+        spans,
+    )
+    if any(len(values) != metadata["total"] for values in arrays):
         raise ValueError("planar track arrays do not match metadata total")
+    if reference_count < 1 or reference_count != len(reference_fingerprints):
+        raise ValueError("planar track reference provenance is inconsistent")
+    if len(set(reference_fingerprints)) != len(reference_fingerprints):
+        raise ValueError("planar track reference fingerprints must be unique")
     frames = []
     for index in range(len(lines)):
         state = TrackState(str(states[index]))
+        reference_index = int(reference_indices[index])
+        if state == TrackState.OBSERVED and not (
+            0 <= reference_index < reference_count
+        ):
+            raise ValueError("observed planar frame has an invalid reference index")
+        if state == TrackState.UNRESOLVED and reference_index != -1:
+            raise ValueError("unresolved planar frame cannot name a reference")
         H = None if state == TrackState.UNRESOLVED else homographies[index].copy()
         frames.append(
             PlanarFrame(
@@ -207,93 +292,284 @@ def load_planar_track(path: str | Path) -> tuple[PlanarTrack, dict[str, int | fl
                     float(errors[index]),
                     float(spans[index]),
                 ),
+                reference_index=None if reference_index < 0 else reference_index,
             )
         )
-    return PlanarTrack(tuple(frames)), metadata
+    return PlanarTrack(tuple(frames), reference_fingerprints), metadata
 
 
 def track_planar_frames(
     frames: Iterable[np.ndarray],
-    profile: PlanarProfile,
+    profile: PlanarProfile | Sequence[PlanarProfile],
     config: PlanarTrackerConfig = PlanarTrackerConfig(),
 ) -> PlanarTrack:
+    profiles = _normalize_profiles(profile)
+    fingerprints = tuple(_profile_fingerprint(reference) for reference in profiles)
     sift = cv2.SIFT_create(nfeatures=5_000, contrastThreshold=0.02)
-    reference_keypoints, reference_descriptors = sift.detectAndCompute(
-        profile.reference_gray, profile.tracking_mask
-    )
-    if reference_descriptors is None or len(reference_keypoints) < 8:
-        raise ValueError("the planar profile contains too few trackable features")
+    references = []
+    for reference in profiles:
+        keypoints, descriptors = sift.detectAndCompute(
+            reference.reference_gray, reference.tracking_mask
+        )
+        if descriptors is None or len(keypoints) < 8:
+            raise ValueError("the planar profile contains too few trackable features")
+        references.append(
+            _ReferenceState(reference, tuple(keypoints), descriptors)
+        )
 
     output: list[PlanarFrame] = []
     matcher = cv2.BFMatcher(cv2.NORM_L2)
     previous_gray: np.ndarray | None = None
-    tracked_reference = np.empty((0, 2), dtype=np.float32)
-    tracked_frame = np.empty((0, 2), dtype=np.float32)
+    selector = _ReferenceSelector()
     for frame_index, frame in enumerate(frames):
         gray = _gray(frame)
-        if gray.shape != profile.reference_gray.shape:
+        if gray.shape != profiles[0].reference_gray.shape:
             raise ValueError("video frames must match the planar profile dimensions")
 
-        should_relocalize = (
-            previous_gray is None
-            or frame_index % max(1, config.relocalize_interval) == 0
-            or len(tracked_frame) < 8
-        )
-        direct_points: tuple[np.ndarray, np.ndarray] | None = None
-        flow_points: tuple[np.ndarray, np.ndarray] | None = None
-        if should_relocalize:
-            direct_points = _match_reference(
-                gray,
-                sift,
+        features_computed = False
+        frame_keypoints: tuple[cv2.KeyPoint, ...] = ()
+        frame_descriptors: np.ndarray | None = None
+
+        def direct_match(
+            reference: _ReferenceState,
+        ) -> tuple[np.ndarray, np.ndarray]:
+            nonlocal features_computed, frame_keypoints, frame_descriptors
+            reference.last_direct_frame = frame_index
+            if not features_computed:
+                keypoints, frame_descriptors = sift.detectAndCompute(gray, None)
+                frame_keypoints = tuple(keypoints)
+                features_computed = True
+            return _match_reference(
+                frame_keypoints,
+                frame_descriptors,
                 matcher,
-                reference_keypoints,
-                reference_descriptors,
-                config,
-            )
-        elif previous_gray is not None:
-            flow_points = _track_points(
-                previous_gray,
-                gray,
-                tracked_reference,
-                tracked_frame,
+                reference.keypoints,
+                reference.descriptors,
                 config,
             )
 
-        points = direct_points if direct_points is not None else flow_points
-        if points is None:
-            points = _empty_points()
-        result = _fit_correspondences(*points, profile, config)
-        if result.frame.state == TrackState.UNRESOLVED:
-            if direct_points is None:
-                direct_points = _match_reference(
-                    gray,
-                    sift,
-                    matcher,
-                    reference_keypoints,
-                    reference_descriptors,
-                    config,
-                )
-                result = _fit_correspondences(*direct_points, profile, config)
-            elif previous_gray is not None and len(tracked_frame) >= 8:
+        candidates = []
+        direct_attempted = []
+        for reference in references:
+            has_tracked_points = len(reference.tracked_frame) >= 8
+            retry_interval = (
+                1
+                if len(references) == 1
+                else max(1, config.unresolved_relocalize_interval)
+            )
+            retry_due = (
+                frame_index - reference.last_direct_frame
+                >= retry_interval
+            )
+            should_relocalize = (
+                previous_gray is None
+                or frame_index % max(1, config.relocalize_interval) == 0
+                or (not has_tracked_points and retry_due)
+            )
+            direct_points: tuple[np.ndarray, np.ndarray] | None = None
+            flow_points: tuple[np.ndarray, np.ndarray] | None = None
+            attempted_direct = False
+            attempted_flow = False
+            if should_relocalize:
+                direct_points = direct_match(reference)
+                attempted_direct = True
+            elif previous_gray is not None and has_tracked_points:
                 flow_points = _track_points(
                     previous_gray,
                     gray,
-                    tracked_reference,
-                    tracked_frame,
+                    reference.tracked_reference,
+                    reference.tracked_frame,
                     config,
                 )
-                flow_result = _fit_correspondences(*flow_points, profile, config)
-                if flow_result.frame.state == TrackState.OBSERVED:
-                    result = flow_result
+                attempted_flow = True
 
-        output.append(result.frame)
-        if result.frame.state == TrackState.OBSERVED:
-            tracked_reference = result.reference_points
-            tracked_frame = result.frame_points
-        else:
-            tracked_reference, tracked_frame = _empty_points()
+            points = direct_points if direct_points is not None else flow_points
+            if points is None:
+                points = _empty_points()
+            result = _fit_correspondences(*points, reference.profile, config)
+            if result.frame.state == TrackState.UNRESOLVED:
+                if attempted_flow and not attempted_direct:
+                    direct_points = direct_match(reference)
+                    attempted_direct = True
+                    result = _fit_correspondences(
+                        *direct_points, reference.profile, config
+                    )
+                elif attempted_direct and previous_gray is not None and has_tracked_points:
+                    flow_points = _track_points(
+                        previous_gray,
+                        gray,
+                        reference.tracked_reference,
+                        reference.tracked_frame,
+                        config,
+                    )
+                    flow_result = _fit_correspondences(
+                        *flow_points, reference.profile, config
+                    )
+                    if flow_result.frame.state == TrackState.OBSERVED:
+                        result = flow_result
+
+            candidates.append(result)
+            direct_attempted.append(attempted_direct)
+            if result.frame.state == TrackState.OBSERVED:
+                reference.tracked_reference = result.reference_points
+                reference.tracked_frame = result.frame_points
+            else:
+                reference.tracked_reference, reference.tracked_frame = _empty_points()
+
+        active = selector.active_index
+        if (
+            active is not None
+            and candidates[active].frame.state == TrackState.UNRESOLVED
+            and not any(
+                candidate.frame.state == TrackState.OBSERVED
+                for candidate in candidates
+            )
+        ):
+            for index, reference in enumerate(references):
+                if direct_attempted[index]:
+                    continue
+                points = direct_match(reference)
+                result = _fit_correspondences(*points, reference.profile, config)
+                candidates[index] = result
+                if result.frame.state == TrackState.OBSERVED:
+                    reference.tracked_reference = result.reference_points
+                    reference.tracked_frame = result.frame_points
+                else:
+                    reference.tracked_reference, reference.tracked_frame = _empty_points()
+
+        output.append(_select_reference_frame(candidates, selector, config))
         previous_gray = gray
-    return PlanarTrack(tuple(output))
+    return PlanarTrack(tuple(output), fingerprints)
+
+
+def _normalize_profiles(
+    profile: PlanarProfile | Sequence[PlanarProfile],
+) -> tuple[PlanarProfile, ...]:
+    profiles = (profile,) if isinstance(profile, PlanarProfile) else tuple(profile)
+    if not profiles:
+        raise ValueError("at least one planar profile is required")
+    if any(not isinstance(reference, PlanarProfile) for reference in profiles):
+        raise TypeError("all planar profiles must be PlanarProfile instances")
+    shape = profiles[0].reference_gray.shape
+    if any(reference.reference_gray.shape != shape for reference in profiles[1:]):
+        raise ValueError("all planar profile reference dimensions must match")
+    fingerprints = [_profile_fingerprint(reference) for reference in profiles]
+    if len(set(fingerprints)) != len(fingerprints):
+        raise ValueError("planar profiles must be unique")
+    return profiles
+
+
+def _profile_fingerprint(profile: PlanarProfile) -> str:
+    digest = hashlib.sha256()
+    for values in (
+        profile.reference_gray,
+        profile.tracking_mask,
+        profile.string_lines,
+    ):
+        array = np.ascontiguousarray(values)
+        digest.update(str(array.shape).encode())
+        digest.update(array.dtype.str.encode())
+        digest.update(array.view(np.uint8))
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _select_reference_frame(
+    candidates: list[_FitResult],
+    selector: _ReferenceSelector,
+    config: PlanarTrackerConfig,
+) -> PlanarFrame:
+    observed = [
+        index
+        for index, result in enumerate(candidates)
+        if result.frame.state == TrackState.OBSERVED
+    ]
+    if not observed:
+        selector.pending_index = None
+        selector.pending_frames = 0
+        selector.missing_frames += 1
+        if selector.missing_frames > max(0, config.reference_memory_frames):
+            selector.active_index = None
+        best = max(
+            range(len(candidates)),
+            key=lambda index: _reference_selection_key(
+                candidates[index].frame, index, config
+            ),
+        )
+        return replace(candidates[best].frame, reference_index=None)
+
+    selector.missing_frames = 0
+    best = max(
+        observed,
+        key=lambda index: _reference_selection_key(
+            candidates[index].frame, index, config
+        ),
+    )
+    active = selector.active_index
+    if active not in observed:
+        selector.active_index = best
+        selector.pending_index = None
+        selector.pending_frames = 0
+    elif best == active:
+        selector.pending_index = None
+        selector.pending_frames = 0
+    else:
+        active_score = _reference_robustness(candidates[active].frame, config)
+        best_score = _reference_robustness(candidates[best].frame, config)
+        margin = max(0.0, config.reference_switch_margin)
+        if best_score < active_score * (1.0 + margin):
+            selector.pending_index = None
+            selector.pending_frames = 0
+        else:
+            if selector.pending_index == best:
+                selector.pending_frames += 1
+            else:
+                selector.pending_index = best
+                selector.pending_frames = 1
+            if selector.pending_frames >= max(
+                1, config.reference_switch_confirm_frames
+            ):
+                selector.active_index = best
+                selector.pending_index = None
+                selector.pending_frames = 0
+
+    chosen = selector.active_index
+    if chosen is None:
+        chosen = best
+        selector.active_index = best
+    return replace(candidates[chosen].frame, reference_index=chosen)
+
+
+def _reference_selection_key(
+    frame: PlanarFrame,
+    index: int,
+    config: PlanarTrackerConfig,
+) -> tuple[float, float, float, int, float, int]:
+    error = frame.diagnostics.median_reprojection_error_px
+    finite_error = error if np.isfinite(error) else float("inf")
+    return (
+        _reference_robustness(frame, config),
+        -finite_error,
+        frame.diagnostics.string_axis_span,
+        frame.diagnostics.inliers,
+        frame.diagnostics.inlier_ratio,
+        -index,
+    )
+
+
+def _reference_robustness(
+    frame: PlanarFrame,
+    config: PlanarTrackerConfig,
+) -> float:
+    diagnostics = frame.diagnostics
+    error = diagnostics.median_reprojection_error_px
+    if not np.isfinite(error):
+        return 0.0
+    return min(
+        diagnostics.inliers / max(1, config.min_inliers),
+        diagnostics.inlier_ratio / max(config.min_inlier_ratio, 1e-12),
+        diagnostics.string_axis_span / max(config.min_string_axis_span, 1e-12),
+        config.max_median_reprojection_error_px / max(error, 1e-6),
+    )
 
 
 def _empty_points() -> tuple[np.ndarray, np.ndarray]:
@@ -304,14 +580,13 @@ def _empty_points() -> tuple[np.ndarray, np.ndarray]:
 
 
 def _match_reference(
-    gray: np.ndarray,
-    sift: cv2.SIFT,
+    frame_keypoints: tuple[cv2.KeyPoint, ...],
+    frame_descriptors: np.ndarray | None,
     matcher: cv2.BFMatcher,
     reference_keypoints: tuple[cv2.KeyPoint, ...],
     reference_descriptors: np.ndarray,
     config: PlanarTrackerConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
-    frame_keypoints, frame_descriptors = sift.detectAndCompute(gray, None)
     if frame_descriptors is None or len(frame_keypoints) < 2:
         return _empty_points()
 

@@ -195,12 +195,17 @@ def planar_profile(
 
 @main.command("planar-track")
 @click.argument("filename")
-@click.option("--profile", "profile_value", help="Profile name or explicit .npz path. Defaults to the video stem.")
+@click.option(
+    "--profile",
+    "profile_values",
+    multiple=True,
+    help="Profile name or explicit .npz path. Repeat for multiple views; defaults to the video stem.",
+)
 @click.option("--output", type=click.Path(dir_okay=False, path_type=Path), help="Override the projection artifact path.")
 @click.option("--force", is_flag=True, help="Overwrite an existing projection artifact.")
 def planar_track(
     filename: str,
-    profile_value: str | None,
+    profile_values: tuple[str, ...],
     output: Path | None,
     force: bool,
 ) -> None:
@@ -209,15 +214,31 @@ def planar_track(
     from .planar_io import projection_path, track_planar_video
 
     video_path = _resolve_video(filename)
-    source = _resolve_profile_artifact(profile_value, video_path.stem)
-    if not source.is_file():
-        raise click.ClickException(f"Planar profile not found: {source}")
+    sources = tuple(
+        _resolve_profile_artifact(value, video_path.stem)
+        for value in (profile_values or (None,))
+    )
+    resolved_sources = tuple(source.resolve() for source in sources)
+    duplicate = next(
+        (
+            source
+            for index, source in enumerate(resolved_sources)
+            if source in resolved_sources[:index]
+        ),
+        None,
+    )
+    if duplicate is not None:
+        raise click.ClickException(f"Duplicate planar profile: {duplicate}")
+    missing = next((source for source in sources if not source.is_file()), None)
+    if missing is not None:
+        raise click.ClickException(f"Planar profile not found: {missing}")
     target = output or projection_path(video_path.stem)
     _require_new_artifact(target, force)
 
     try:
-        profile = load_planar_profile(source)
-        track, metadata = track_planar_video(video_path, profile)
+        profiles = tuple(load_planar_profile(source) for source in sources)
+        tracker_profiles = profiles[0] if len(profiles) == 1 else profiles
+        track, metadata = track_planar_video(video_path, tracker_profiles)
     except (KeyError, OSError, TypeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 

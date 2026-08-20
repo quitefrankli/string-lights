@@ -134,6 +134,212 @@ def test_planar_track_does_not_save_an_entirely_unresolved_track(
     assert not output.exists()
 
 
+def test_planar_track_passes_repeated_profiles_to_tracker_in_order(
+    tmp_path, monkeypatch
+) -> None:
+    video = _artifact(tmp_path / "clip.mp4")
+    first_source = _artifact(tmp_path / "first.npz")
+    second_source = _artifact(tmp_path / "second.npz")
+    output = tmp_path / "track.npz"
+    first_profile = object()
+    second_profile = object()
+    loaded = []
+    received = {}
+    observed = PlanarFrame(
+        homography=np.eye(3),
+        projected_lines=np.zeros((6, 2, 2)),
+        state=TrackState.OBSERVED,
+        diagnostics=TrackDiagnostics(20, 20, 1.0, 0.1, 1.0),
+    )
+
+    import string_lights.planar as planar
+    import string_lights.planar_io as planar_io
+
+    def load_profile(path):
+        loaded.append(path)
+        return {
+            first_source: first_profile,
+            second_source: second_profile,
+        }[path]
+
+    def track_video(path, profiles):
+        received["path"] = path
+        received["profiles"] = profiles
+        return PlanarTrack((observed,)), {
+            "w": 10,
+            "h": 10,
+            "fps": 30.0,
+            "total": 1,
+        }
+
+    monkeypatch.setattr(planar, "load_planar_profile", load_profile)
+    monkeypatch.setattr(planar, "save_planar_track", lambda *_: None)
+    monkeypatch.setattr(planar_io, "track_planar_video", track_video)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "planar-track",
+            str(video),
+            "--profile",
+            str(first_source),
+            "--profile",
+            str(second_source),
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert loaded == [first_source, second_source]
+    assert received == {
+        "path": video,
+        "profiles": (first_profile, second_profile),
+    }
+
+
+def test_planar_track_keeps_default_and_single_profile_inputs_scalar(
+    tmp_path, monkeypatch
+) -> None:
+    video = _artifact(tmp_path / "clip.mp4")
+    default_source = tmp_path / "data/components/profiles/clip.npz"
+    default_source.parent.mkdir(parents=True)
+    _artifact(default_source)
+    explicit_source = _artifact(tmp_path / "explicit.npz")
+    default_profile = object()
+    explicit_profile = object()
+    tracker_inputs = []
+    observed = PlanarFrame(
+        homography=np.eye(3),
+        projected_lines=np.zeros((6, 2, 2)),
+        state=TrackState.OBSERVED,
+        diagnostics=TrackDiagnostics(20, 20, 1.0, 0.1, 1.0),
+    )
+
+    import string_lights.planar as planar
+    import string_lights.planar_io as planar_io
+
+    def load_profile(path):
+        return {
+            default_source: default_profile,
+            explicit_source: explicit_profile,
+        }[path.resolve()]
+
+    def track_video(_, profiles):
+        tracker_inputs.append(profiles)
+        return PlanarTrack((observed,)), {
+            "w": 10,
+            "h": 10,
+            "fps": 30.0,
+            "total": 1,
+        }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(planar, "load_planar_profile", load_profile)
+    monkeypatch.setattr(planar, "save_planar_track", lambda *_: None)
+    monkeypatch.setattr(planar_io, "track_planar_video", track_video)
+
+    default_result = CliRunner().invoke(
+        main,
+        ["planar-track", str(video), "--output", str(tmp_path / "default.npz")],
+    )
+    explicit_result = CliRunner().invoke(
+        main,
+        [
+            "planar-track",
+            str(video),
+            "--profile",
+            str(explicit_source),
+            "--output",
+            str(tmp_path / "explicit-track.npz"),
+        ],
+    )
+
+    assert default_result.exit_code == 0, default_result.output
+    assert explicit_result.exit_code == 0, explicit_result.output
+    assert tracker_inputs == [default_profile, explicit_profile]
+
+
+def test_planar_track_reports_a_missing_repeated_profile_before_loading(
+    tmp_path, monkeypatch
+) -> None:
+    video = _artifact(tmp_path / "clip.mp4")
+    existing = _artifact(tmp_path / "existing.npz")
+    missing = tmp_path / "missing.npz"
+
+    import string_lights.planar as planar
+    import string_lights.planar_io as planar_io
+
+    monkeypatch.setattr(
+        planar,
+        "load_planar_profile",
+        lambda *_: (_ for _ in ()).throw(AssertionError("must not load")),
+    )
+    monkeypatch.setattr(
+        planar_io,
+        "track_planar_video",
+        lambda *_: (_ for _ in ()).throw(AssertionError("must not track")),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "planar-track",
+            str(video),
+            "--profile",
+            str(existing),
+            "--profile",
+            str(missing),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert f"Planar profile not found: {missing}" in result.output
+
+
+def test_planar_track_rejects_duplicate_profile_aliases_before_loading(
+    tmp_path, monkeypatch
+) -> None:
+    video = _artifact(tmp_path / "clip.mp4")
+    profile = tmp_path / "data/components/profiles/shared.npz"
+    profile.parent.mkdir(parents=True)
+    _artifact(profile)
+    loaded = []
+    tracked = []
+
+    import string_lights.planar as planar
+    import string_lights.planar_io as planar_io
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        planar,
+        "load_planar_profile",
+        lambda path: loaded.append(path),
+    )
+    monkeypatch.setattr(
+        planar_io,
+        "track_planar_video",
+        lambda *args: tracked.append(args),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "planar-track",
+            str(video),
+            "--profile",
+            "shared",
+            "--profile",
+            "data/components/profiles/shared.npz",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Duplicate planar profile" in result.output
+    assert loaded == []
+    assert tracked == []
+
+
 def test_planar_validate_passes_and_enforces_accuracy_gates(
     tmp_path, monkeypatch
 ) -> None:

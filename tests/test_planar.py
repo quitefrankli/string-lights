@@ -217,5 +217,25 @@ def test_planar_track_round_trips_with_video_metadata(tmp_path) -> None:
     restored, metadata = load_planar_track(path)
 
     assert restored.frames[0].state == TrackState.OBSERVED
+    assert restored.frames[0].reference_index == 0
     np.testing.assert_allclose(restored.projected_lines, track.projected_lines)
     assert metadata == {"w": 320, "h": 240, "fps": 30.0, "total": 1}
+
+
+def test_planar_track_loader_maps_legacy_observed_frames_to_first_reference(
+    tmp_path,
+) -> None:
+    reference, mask, strings = _textured_plane()
+    track = track_planar_frames(
+        [reference], create_planar_profile(reference, mask, strings)
+    )
+    path = tmp_path / "legacy-projection-track.npz"
+    save_planar_track(path, track, {"w": 320, "h": 240, "fps": 30.0, "total": 1})
+    with np.load(path, allow_pickle=False) as data:
+        payload = {key: data[key] for key in data.files if key != "reference_indices"}
+    payload["format_version"] = np.int64(1)
+    np.savez_compressed(path, **payload)
+
+    restored, _ = load_planar_track(path)
+
+    assert restored.frames[0].reference_index == 0
