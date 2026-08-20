@@ -315,10 +315,14 @@ def _match_reference(
     if frame_descriptors is None or len(frame_keypoints) < 2:
         return _empty_points()
 
-    matches = []
+    matches_by_target: dict[int, cv2.DMatch] = {}
     for pair in matcher.knnMatch(reference_descriptors, frame_descriptors, k=2):
         if len(pair) == 2 and pair[0].distance < config.lowe_ratio * pair[1].distance:
-            matches.append(pair[0])
+            match = pair[0]
+            previous = matches_by_target.get(match.trainIdx)
+            if previous is None or match.distance < previous.distance:
+                matches_by_target[match.trainIdx] = match
+    matches = sorted(matches_by_target.values(), key=lambda match: match.queryIdx)
     if not matches:
         return _empty_points()
     reference_points = np.array(

@@ -183,6 +183,31 @@ def test_tracking_rejects_matches_clustered_at_one_end_of_the_strings() -> None:
     assert np.isnan(track.projected_lines[0]).all()
 
 
+def test_tracking_rejects_reused_target_feature_that_collapses_plane() -> None:
+    reference = np.full((280, 480, 3), 220, dtype=np.uint8)
+    repeated_feature = np.full((31, 31, 3), 220, dtype=np.uint8)
+    cv2.line(repeated_feature, (3, 15), (27, 15), (20, 20, 20), 3)
+    cv2.line(repeated_feature, (15, 15), (15, 21), (20, 20, 20), 3)
+    for y in range(25, 239, 45):
+        for x in range(25, 439, 45):
+            reference[y : y + 31, x : x + 31] = repeated_feature
+
+    frame = np.full_like(reference, 220)
+    frame[120:151, 210:241] = repeated_feature
+    cv2.putText(frame, "Z", (30, 230), cv2.FONT_HERSHEY_SIMPLEX, 2, (20, 20, 20), 5)
+    mask = np.full(reference.shape[:2], 255, dtype=np.uint8)
+    strings = np.array(
+        [[[50.0, y], [430.0, y]] for y in np.linspace(110.0, 170.0, 6)],
+        dtype=np.float64,
+    )
+
+    track = track_planar_frames([frame], create_planar_profile(reference, mask, strings))
+
+    assert track.frames[0].state == TrackState.UNRESOLVED
+    assert track.frames[0].homography is None
+    assert np.isnan(track.frames[0].projected_lines).all()
+
+
 def test_planar_track_round_trips_with_video_metadata(tmp_path) -> None:
     reference, mask, strings = _textured_plane()
     track = track_planar_frames([reference], create_planar_profile(reference, mask, strings))
