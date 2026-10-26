@@ -6,6 +6,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from tqdm import tqdm
 
 from .board import camera_matrix
 from .config import (
@@ -76,8 +77,17 @@ def track_planar_video(
             yield frame
             frame_index += 1
 
+    total = metadata["total"]
+    if max_frames is not None:
+        total = min(total, max_frames) if total > 0 else max_frames
     try:
-        track = track_planar_frames(frames(), profile)
+        with tqdm(total=total or None, desc="planar-track", unit="f") as progress:
+            def tracked_frames():
+                for frame in frames():
+                    yield frame
+                    progress.update(1)
+
+            track = track_planar_frames(tracked_frames(), profile)
     finally:
         cap.release()
     metadata["total"] = len(track.frames)
