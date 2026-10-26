@@ -33,6 +33,7 @@ def test_cache_command_runs_only_requested_stage(tmp_path, monkeypatch, command)
     expected = {"frames": 500}
     if command == "masks":
         expected["stem"] = "clip"
+        expected["frame_skip"] = 1
     assert calls[0] == (str(video), expected)
     assert calls[1] == (("clip", "values", "indices", "metadata") if command == "masks" else ("clip", "values", "metadata"))
 

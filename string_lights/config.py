@@ -41,7 +41,6 @@ BOX_THRESHOLD = 0.35
 TEXT_THRESHOLD = 0.25
 MASK_THRESHOLD = 0.0   # SAM2 logit threshold; higher = tighter mask boundary
 MASK_DILATE_PX = 3    # dilation after masking to fill gaps
-MASK_FRAME_SKIP = 1
 
 # String rendering
 NUM_STRINGS = 6

@@ -16,6 +16,10 @@ uv run string-lights masks cupid.mp4 --frames 500
 uv run string-lights poses VIDEO.mp4 --frames 500
 ```
 
+Mask generation computes masks on every frame by default (`--frame-skip 1`).
+Use `--frame-skip N` to opt into sampling. Skipped frames hold the most recent mask;
+regenerate with `--force` to change an existing cache's sampling interval.
+
 `poses` estimates ArUco board poses; `planar-track` generates markerless
 projections. All three commands accept `--force` to replace existing caches.
 The standalone `masks` and `poses` commands replace `run --masks` and `run --poses`.

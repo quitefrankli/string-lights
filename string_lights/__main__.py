@@ -107,15 +107,16 @@ def poses(filename: str, frames: int | None, force: bool) -> None:
 @main.command("masks")
 @click.argument("filename")
 @click.option("--frames", type=click.IntRange(min=1), help="Max number of frames to process.")
+@click.option("--frame-skip", type=click.IntRange(min=1), default=1, show_default=True, help="Compute a mask every N frames; use 1 for every frame.")
 @click.option("--force", is_flag=True, help="Overwrite an existing mask cache.")
-def masks(filename: str, frames: int | None, force: bool) -> None:
+def masks(filename: str, frames: int | None, frame_skip: int, force: bool) -> None:
     """Compute and cache SAM masks without pose estimation or rendering."""
     from .pipeline import compute_masks, masks_meta_path, masks_path, save_masks
 
     video = _resolve_video(filename)
     for target in (masks_path(video.stem), masks_meta_path(video.stem)):
         _require_new_artifact(target, force)
-    values, indices, metadata = compute_masks(str(video), stem=video.stem, frames=frames)
+    values, indices, metadata = compute_masks(str(video), stem=video.stem, frames=frames, frame_skip=frame_skip)
     save_masks(video.stem, values, indices, metadata)
 
 

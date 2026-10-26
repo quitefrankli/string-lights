@@ -9,7 +9,7 @@ from typing import Generator, Iterator
 from tqdm import tqdm
 
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
-from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, MASK_FRAME_SKIP, SMOOTH_POSES, T_MIN_CUTOFF, T_BETA, R_MIN_CUTOFF, R_BETA, MAX_TRANSLATION_JUMP, MAX_ROTATION_JUMP
+from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, SMOOTH_POSES, T_MIN_CUTOFF, T_BETA, R_MIN_CUTOFF, R_BETA, MAX_TRANSLATION_JUMP, MAX_ROTATION_JUMP
 from .masking import resolve_device, load_models, get_mask
 from .pose import estimate_pose, pose_jump, smooth_poses, Pose
 from .audio import get_strings_to_highlight, get_random_strings
@@ -226,12 +226,15 @@ def compute_masks(
     stem: str | None = None,
     frames: int | None = None,
     debug_writer: cv2.VideoWriter | None = None,
+    frame_skip: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Compute SAM2 masks at every MASK_FRAME_SKIP-th frame.
+    """Compute SAM2 masks every frame_skip frames, holding masks between updates.
 
     Streams mask writes to a memmap file (if stem given) to avoid accumulating
     all frames in RAM. Returns (keyframes (K,h,w) uint8, indices (K,) int32, meta).
     """
+    if frame_skip < 1:
+        raise ValueError("frame_skip must be positive")
     cap = cv2.VideoCapture(input_path)
     meta = _video_meta(cap, frames, path=input_path)
     total, h, w = meta["total"], meta["h"], meta["w"]
@@ -241,7 +244,7 @@ def compute_masks(
 
     # Pre-allocate max possible keyframes; actual count tracked by k.
     # If stem given, stream directly to disk via memmap to avoid RAM accumulation.
-    n_max = max(1, -(-total // MASK_FRAME_SKIP))  # ceiling division
+    n_max = max(1, -(-total // frame_skip))  # ceiling division
     if stem is not None:
         out_path = _masks_tmp_path(stem)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -257,7 +260,7 @@ def compute_masks(
         ret, frame = cap.read()
         if not ret:
             break
-        if i % MASK_FRAME_SKIP == 0:
+        if i % frame_skip == 0:
             current = get_mask(
                 frame, MASK_PROMPT,
                 gd_processor, gd_model, sam_processor, sam_model,
