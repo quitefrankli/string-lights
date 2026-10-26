@@ -80,6 +80,63 @@ def test_run_rejects_conflicting_pose_sources_before_processing(monkeypatch) -> 
         assert "Input file not found" not in result.output
 
 
+def test_tune_requires_an_explicit_tracking_mode() -> None:
+    result = CliRunner().invoke(main, ["tune", "clip"])
+
+    assert result.exit_code != 0
+    assert "exactly one of --aruco or --no-aruco is required" in result.output
+
+
+def test_tune_rejects_both_tracking_modes() -> None:
+    result = CliRunner().invoke(main, ["tune", "clip", "--aruco", "--no-aruco"])
+
+    assert result.exit_code != 0
+    assert "exactly one of --aruco or --no-aruco is required" in result.output
+
+
+def test_tune_dispatches_aruco_mode(tmp_path, monkeypatch) -> None:
+    input_dir = tmp_path / "data/input"
+    input_dir.mkdir(parents=True)
+    video = _artifact(input_dir / "clip.mp4")
+    received = []
+
+    import string_lights.tuner as tuner
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(tuner, "run_tuner", lambda path: received.append(path))
+
+    result = CliRunner().invoke(main, ["tune", "clip", "--aruco"])
+
+    assert result.exit_code == 0, result.output
+    assert received == ["data/input/clip.mp4"]
+
+
+def test_tune_dispatches_markerless_mode(tmp_path, monkeypatch) -> None:
+    input_dir = tmp_path / "data/input"
+    profile_dir = tmp_path / "data/components/profiles"
+    input_dir.mkdir(parents=True)
+    profile_dir.mkdir(parents=True)
+    video = _artifact(input_dir / "clip.mp4")
+    annotation = _artifact(profile_dir / "clip.json")
+    received = []
+
+    import string_lights.tuner as tuner
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        tuner,
+        "run_planar_tuner",
+        lambda path, annotation_path: received.append((path, annotation_path)),
+    )
+
+    result = CliRunner().invoke(main, ["tune", "clip", "--no-aruco"])
+
+    assert result.exit_code == 0, result.output
+    assert received == [
+        ("data/input/clip.mp4", Path("data/components/profiles/clip.json"))
+    ]
+
+
 def test_planar_profile_refuses_to_overwrite_without_force(tmp_path) -> None:
     video = _artifact(tmp_path / "clip.mp4")
     annotation = _artifact(tmp_path / "profile.json")
@@ -196,6 +253,53 @@ def test_planar_track_passes_repeated_profiles_to_tracker_in_order(
         "path": video,
         "profiles": (first_profile, second_profile),
     }
+
+
+def test_planar_track_forwards_frame_limit(tmp_path, monkeypatch) -> None:
+    video = _artifact(tmp_path / "clip.mp4")
+    profile = _artifact(tmp_path / "profile.npz")
+    received = {}
+    observed = PlanarFrame(
+        homography=np.eye(3),
+        projected_lines=np.zeros((6, 2, 2)),
+        state=TrackState.OBSERVED,
+        diagnostics=TrackDiagnostics(20, 20, 1.0, 0.1, 1.0),
+    )
+
+    import string_lights.planar as planar
+    import string_lights.planar_io as planar_io
+
+    monkeypatch.setattr(planar, "load_planar_profile", lambda _: object())
+    monkeypatch.setattr(planar, "save_planar_track", lambda *_: None)
+
+    def track_video(path, loaded_profile, max_frames=None):
+        received.update(path=path, profile=loaded_profile, frames=max_frames)
+        return PlanarTrack((observed,)), {
+            "w": 10,
+            "h": 10,
+            "fps": 30.0,
+            "total": 1,
+        }
+
+    monkeypatch.setattr(planar_io, "track_planar_video", track_video)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "planar-track",
+            str(video),
+            "--profile",
+            str(profile),
+            "--output",
+            str(tmp_path / "track.npz"),
+            "--frames",
+            "150",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert received["path"] == video
+    assert received["frames"] == 150
 
 
 def test_planar_track_keeps_default_and_single_profile_inputs_scalar(

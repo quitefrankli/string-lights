@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ title }} · Planar tuner</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='planar_tuner.css') }}">
+</head>
+<body>
+  <header><strong>{{ title }}</strong><span>Planar tuner</span><button id="save">Save profile</button></header>
+  <nav>
+    <label>Tool <select id="tool"><option value="edit">Edit endpoints / vertices</option><option value="tracking_polygons">Draw tracking region</option><option value="exclusion_polygons">Draw exclusion region</option></select></label>
+    <button id="finish">Finish polygon</button><button id="remove">Delete selected region</button>
+    <button id="undo">Undo</button><button id="fit">Fit image</button>
+  </nav>
+  <div id="stage"><canvas id="canvas" tabindex="0" aria-label="Reference frame and editable string endpoints"></canvas></div>
+  <footer>
+    <label>Reference frame <input id="frame" type="range" min="0" value="0"><input id="frame-number" type="number" min="0" value="0"></label>
+    <p>Wheel: zoom · Right-drag or Space + drag: pan · Left-drag: move a handle · Click: add polygon vertex · Enter: finish · Escape: cancel</p>
+    <p id="status" role="status">Loading reference…</p>
+  </footer>
+  <script>window.tunerToken = {{ token|tojson }};</script>
+  <script src="{{ url_for('static', filename='planar_tuner.js') }}"></script>
+</body>
+</html>

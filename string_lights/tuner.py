@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import cv2
 import numpy as np
 
@@ -159,3 +161,10 @@ def run_tuner(input_path: str) -> None:
     for name in ("bridge_top", "bridge_bot", "nut_top", "nut_bot"):
         p = corners[name]
         print(f"STRING_{name.upper()} = ({p[0]:.6f}, {p[1]:.6f}, {p[2]:.6f})")
+
+
+def run_planar_tuner(input_path: str, annotation_path: str | Path) -> None:
+    """Open the markerless annotation editor in a local browser."""
+    from .planar_tuner import run_browser_tuner
+
+    run_browser_tuner(input_path, annotation_path)

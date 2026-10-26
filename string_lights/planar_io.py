@@ -51,7 +51,10 @@ def create_planar_profile_from_annotation(
 def track_planar_video(
     video_path: str | Path,
     profile: PlanarProfile | Sequence[PlanarProfile],
+    max_frames: int | None = None,
 ) -> tuple[PlanarTrack, dict[str, int | float]]:
+    if max_frames is not None and max_frames < 1:
+        raise ValueError("frames must be positive")
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise ValueError(f"could not open video: {video_path}")
@@ -63,11 +66,15 @@ def track_planar_video(
     }
 
     def frames():
+        frame_index = 0
         while True:
+            if max_frames is not None and frame_index >= max_frames:
+                return
             ok, frame = cap.read()
             if not ok:
                 return
             yield frame
+            frame_index += 1
 
     try:
         track = track_planar_frames(frames(), profile)

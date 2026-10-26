@@ -132,8 +132,13 @@ def editor(port: int) -> None:
 
 @main.command()
 @click.argument("filename")
-def tune(filename: str) -> None:
-    from .tuner import run_tuner
+@click.option("--aruco", is_flag=True, help="Tune board-based ArUco coordinates.")
+@click.option("--no-aruco", is_flag=True, help="Tune markerless planar string lines.")
+def tune(filename: str, aruco: bool, no_aruco: bool) -> None:
+    from .tuner import run_planar_tuner, run_tuner
+
+    if aruco == no_aruco:
+        raise click.UsageError("exactly one of --aruco or --no-aruco is required")
 
     input_dir = Path("data/input")
     if Path(filename).suffix:
@@ -150,7 +155,20 @@ def tune(filename: str) -> None:
     if not input_path.exists():
         raise click.ClickException(f"Input file not found: {input_path}")
 
-    run_tuner(str(input_path))
+    if aruco:
+        run_tuner(str(input_path))
+        return
+
+    annotation = Path("data/components/profiles") / f"{input_path.stem}.json"
+    if not annotation.is_file():
+        raise click.ClickException(
+            f"Planar annotation not found: {annotation}. "
+            "Create an annotation before using --no-aruco."
+        )
+    try:
+        run_planar_tuner(str(input_path), annotation)
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
 
 
 @main.command("mask-edit")
@@ -195,6 +213,7 @@ def planar_profile(
 
 @main.command("planar-track")
 @click.argument("filename")
+@click.option("--frames", type=click.IntRange(min=1), help="Max number of frames to track.")
 @click.option(
     "--profile",
     "profile_values",
@@ -205,6 +224,7 @@ def planar_profile(
 @click.option("--force", is_flag=True, help="Overwrite an existing projection artifact.")
 def planar_track(
     filename: str,
+    frames: int | None,
     profile_values: tuple[str, ...],
     output: Path | None,
     force: bool,
@@ -238,7 +258,12 @@ def planar_track(
     try:
         profiles = tuple(load_planar_profile(source) for source in sources)
         tracker_profiles = profiles[0] if len(profiles) == 1 else profiles
-        track, metadata = track_planar_video(video_path, tracker_profiles)
+        if frames is None:
+            track, metadata = track_planar_video(video_path, tracker_profiles)
+        else:
+            track, metadata = track_planar_video(
+                video_path, tracker_profiles, max_frames=frames
+            )
     except (KeyError, OSError, TypeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 
