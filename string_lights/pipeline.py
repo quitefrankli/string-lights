@@ -420,95 +420,85 @@ def process_video(
     disable_masking: bool = False,
     random_strings: bool = False,
     debug_masks: bool = False,
-    only_poses: bool = False,
-    only_masks: bool = False,
-    use_cached_poses: bool = False,
-    use_cached_projections: bool = False,
-    use_cached_masks: bool = False,
+    pose_tracker: str = "aruco",
 ) -> None:
     stem = Path(input_path).stem
 
-    if use_cached_poses and use_cached_projections:
-        raise ValueError("cached poses and cached projections are mutually exclusive")
-    if only_poses and use_cached_projections:
-        raise ValueError("pose-only mode cannot use cached projections")
+    if pose_tracker not in ("aruco", "planar"):
+        raise ValueError("pose_tracker must be aruco or planar")
+
+    cap = cv2.VideoCapture(input_path)
+    video_meta = _video_meta(cap, frames, path=input_path)
+    cap.release()
+
+    def validate_cache(cache_meta: dict, name: str) -> None:
+        if (cache_meta["w"], cache_meta["h"]) != (video_meta["w"], video_meta["h"]):
+            raise ValueError(f"cached {name} dimensions do not match the input video")
+        if cache_meta["total"] < video_meta["total"]:
+            raise ValueError(f"cached {name} do not cover the requested video frames; regenerate the cache with the required --frames limit")
+
+    masks_data = None
+    if debug_masks or not disable_masking:
+        if not masks_cached(stem):
+            raise FileNotFoundError(f"No cached masks at {masks_path(stem)}. Generate them with: uv run string-lights masks {input_path}")
+        print(f"  using cached masks ← {masks_path(stem)}")
+        masks_arr, indices, mask_meta = load_masks(stem)
+        validate_cache(mask_meta, "masks")
+        masks_data = (masks_arr, indices)
 
     if debug_masks:
         debug_out = str(Path(output_path).with_suffix("").with_suffix("")) + ".debug.mp4"
-        cap = cv2.VideoCapture(input_path)
-        meta = _video_meta(cap, frames, path=input_path)
-        cap.release()
+        meta = video_meta
         total = meta["total"]
         debug_writer = cv2.VideoWriter(
             debug_out, cv2.VideoWriter_fourcc(*"mp4v"), meta["fps"], (meta["w"], meta["h"])
         )
         try:
-            if use_cached_masks and masks_cached(stem):
-                print(f"  using cached masks ← {masks_path(stem)}")
-                masks_arr, indices, _ = load_masks(stem)
-                cap2 = cv2.VideoCapture(input_path)
+            cap2 = cv2.VideoCapture(input_path)
+            try:
                 for frame, mask in zip(_stream_frames(cap2, total), masks_iter(masks_arr, indices, total)):
                     vis = frame.copy()
                     overlay = vis.copy()
                     overlay[mask.astype(bool)] = (0, 0, 200)
                     cv2.addWeighted(overlay, 0.4, vis, 0.6, 0, vis)
                     debug_writer.write(vis)
+            finally:
                 cap2.release()
-            else:
-                compute_masks(input_path, frames=frames, debug_writer=debug_writer)
         finally:
             debug_writer.release()
         print(f"Done.  Debug video → {debug_out}")
         return
 
-    only_mode = only_poses or only_masks
-
     poses: list[Pose] | None = None
     projections: np.ndarray | None = None
     meta: dict | None = None
 
-    if not only_mode and use_cached_projections:
+    if pose_tracker == "planar":
         from .planar import load_planar_track
         from .planar_io import projection_path
 
         path = projection_path(stem)
         if not path.exists():
-            raise FileNotFoundError(f"No cached projections at {path}")
+            raise FileNotFoundError(f"No cached projections at {path}. Generate them with: uv run string-lights planar-track {input_path}")
         print(f"  using cached planar projections ← {path}")
         track, meta = load_planar_track(path)
         projections = track.projected_lines
 
-        cap = cv2.VideoCapture(input_path)
-        video_meta = _video_meta(cap, frames, path=input_path)
-        cap.release()
-        if (meta["w"], meta["h"]) != (video_meta["w"], video_meta["h"]):
-            raise ValueError("cached projection dimensions do not match the input video")
+        validate_cache(meta, "projections")
         if len(projections) < video_meta["total"]:
             raise ValueError("cached projections do not cover the requested video frames")
         meta = {**meta, "fps": video_meta["fps"], "total": video_meta["total"]}
         projections = projections[:meta["total"]]
-    elif only_poses or (not only_mode and not use_cached_poses):
-        poses, meta = compute_poses(input_path, frames)
-        save_poses(stem, poses, meta)
-    elif not only_mode and use_cached_poses:
+    else:
         if not poses_path(stem).exists():
-            raise FileNotFoundError(f"No cached poses at {poses_path(stem)}")
+            raise FileNotFoundError(f"No cached poses at {poses_path(stem)}. Generate them with: uv run string-lights poses {input_path}")
         print(f"  using cached poses ← {poses_path(stem)}")
         poses, meta = load_poses(stem)
-        probe = _ffprobe_meta(input_path)
-        if probe is not None and probe["fps"]:
-            meta = {**meta, "fps": probe["fps"]}
-        if frames is not None:
-            meta = {**meta, "total": min(meta["total"], frames)}
-            poses = poses[:meta["total"]]
-
-    # --masks: just compute & cache masks
-    if only_masks:
-        masks_arr, indices, mmeta = compute_masks(input_path, stem=stem, frames=frames)
-        save_masks(stem, masks_arr, indices, mmeta)
-
-    if only_mode:
-        return
+        validate_cache(meta, "poses")
+        if len(poses) < video_meta["total"]:
+            raise ValueError("cached poses do not cover the requested video frames")
+        meta = {**meta, "fps": video_meta["fps"], "total": video_meta["total"]}
+        poses = poses[:meta["total"]]
 
     total, fps = meta["total"], meta["fps"]
 
@@ -519,18 +509,6 @@ def process_video(
         strings = get_random_strings(total, fps)
     else:
         strings = get_strings_to_highlight(input_path, total, fps)
-
-    masks_data = None
-    if not disable_masking:
-        if use_cached_masks:
-            if not masks_cached(stem):
-                raise FileNotFoundError(f"No cached masks at {masks_path(stem)}")
-            print(f"  using cached masks ← {masks_path(stem)}")
-            masks_arr, indices, _ = load_masks(stem)
-        else:
-            masks_arr, indices, mmeta = compute_masks(input_path, stem=stem, frames=frames)
-            save_masks(stem, masks_arr, indices, mmeta)
-        masks_data = (masks_arr, indices)
 
     if SMOOTH_POSES and poses is not None:
         poses = smooth_poses(poses, fps=fps,

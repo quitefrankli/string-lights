@@ -81,7 +81,7 @@ def create_app() -> Flask:
         from .config import NUM_STRINGS
 
         if not poses_path(stem).exists():
-            return (f"No cached poses for '{stem}'. Run: uv run sl run {stem} --poses", 400)
+            return (f"No cached poses for '{stem}'. Run: uv run string-lights poses {stem}", 400)
 
         poses, meta = load_poses(stem)
         K = camera_matrix(meta["w"], meta["h"])

@@ -8,6 +8,29 @@ A tool for processing video frames of a guitar with an ArUco marker board to det
 
 ## Useful Commands
 
+### Generate caches without rendering
+
+```bash
+uv run string-lights planar-track cupid.mp4 --frames 500
+uv run string-lights masks cupid.mp4 --frames 500
+uv run string-lights poses VIDEO.mp4 --frames 500
+```
+
+`poses` estimates ArUco board poses; `planar-track` generates markerless
+projections. All three commands accept `--force` to replace existing caches.
+The standalone `masks` and `poses` commands replace `run --masks` and `run --poses`.
+
+Render with the projection and mask caches:
+
+```bash
+uv run string-lights run cupid.mp4 --frames 500 --pose-tracker planar
+```
+
+`run` always reads existing caches. Choose `--pose-tracker aruco` (the default)
+for board poses or `--pose-tracker planar` for projections. Masks are loaded
+from cache unless `--disable-masking` is supplied. Missing or insufficient
+caches must be generated separately; rendering never runs SAM or tracking.
+
 ### Convert .mov to .mp4 (with audio)
 ```bash
 ffmpeg -i input.mov -c:v libx264 -c:a aac output.mp4

@@ -36,7 +36,7 @@ def _report(**overrides) -> ValidationReport:
     return ValidationReport(**values)
 
 
-def test_run_forwards_cached_planar_projections(tmp_path, monkeypatch) -> None:
+def test_run_forwards_planar_tracker(tmp_path, monkeypatch) -> None:
     input_dir = tmp_path / "data/input"
     input_dir.mkdir(parents=True)
     _artifact(input_dir / "clip.mp4")
@@ -47,14 +47,13 @@ def test_run_forwards_cached_planar_projections(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(cli, "process_video", lambda *args, **kwargs: received.update(kwargs))
 
-    result = CliRunner().invoke(main, ["run", "clip", "--use-cached-projections"])
+    result = CliRunner().invoke(main, ["run", "clip", "--pose-tracker", "planar"])
 
     assert result.exit_code == 0, result.output
-    assert received["use_cached_projections"] is True
-    assert received["use_cached_poses"] is False
+    assert received["pose_tracker"] == "planar"
 
 
-def test_run_rejects_conflicting_pose_sources_before_processing(monkeypatch) -> None:
+def test_run_rejects_removed_cache_flags_before_processing(monkeypatch) -> None:
     import string_lights.__main__ as cli
 
     monkeypatch.setattr(
@@ -62,21 +61,15 @@ def test_run_rejects_conflicting_pose_sources_before_processing(monkeypatch) -> 
         "process_video",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not process")),
     )
-    conflicts = (
-        ["run", "missing", "--poses", "--use-cached-projections"],
-        [
-            "run",
-            "missing",
-            "--use-cached-poses",
-            "--use-cached-projections",
-        ],
-    )
+    conflicts = (["run", "missing", flag] for flag in (
+        "--use-cached-poses", "--use-cached-projections", "--use-cached-masks"
+    ))
 
     for arguments in conflicts:
         result = CliRunner().invoke(main, arguments)
 
         assert result.exit_code != 0
-        assert "cannot be combined" in result.output
+        assert "No such option" in result.output
         assert "Input file not found" not in result.output
 
 

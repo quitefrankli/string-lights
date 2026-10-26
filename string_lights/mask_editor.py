@@ -83,7 +83,7 @@ def run_mask_editor(stem: str) -> None:
         return
     npz = masks_path(stem)
     if not npz.exists():
-        print(f"No cached masks for '{stem}'. Run: uv run sl run {stem} --masks")
+        print(f"No cached masks for '{stem}'. Run: uv run string-lights masks {stem}")
         return
 
     indices, meta = _load_meta(stem)
