@@ -1,6 +1,7 @@
 # Upstream: https://github.com/FudanCVL/SAM2Matting
 # Revision: 73dd721d77b56749248aefe5e8824d7f61b9d13c (SAM2 tracker family only).
-# Local fix: move the matting input image to the compute device when CPU offloading.
+# Local fixes: CPU-offloaded matting input is moved to the compute device;
+# JPEG frames are decoded on demand with a bounded two-frame cache.
 [build-system]
 requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"

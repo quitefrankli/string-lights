@@ -1,4 +1,5 @@
 import os
+from collections import OrderedDict
 import warnings
 from threading import Thread
 
@@ -68,6 +69,39 @@ def _load_img_as_tensor(img_path, image_size):
     img = torch.from_numpy(img_np).permute(2, 0, 1)
     video_width, video_height = img_pil.size  
     return img, video_height, video_width
+
+class BoundedVideoFrameLoader:
+    """Decode JPEG frames on demand, retaining only the two most recent requests."""
+
+    def __init__(self, img_paths, image_size, offload_video_to_cpu, img_mean, img_std, compute_device):
+        self.img_paths = img_paths
+        self.image_size = image_size
+        self.offload_video_to_cpu = offload_video_to_cpu
+        self.img_mean = img_mean
+        self.img_std = img_std
+        self.compute_device = compute_device
+        self.cache = OrderedDict()
+        with Image.open(img_paths[0]) as image:
+            self.video_width, self.video_height = image.size
+
+    def __getitem__(self, index):
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        if index not in self.cache:
+            img, _, _ = _load_img_as_tensor(self.img_paths[index], self.image_size)
+            img = img.float()
+            img = (img - self.img_mean) / self.img_std
+            if not self.offload_video_to_cpu:
+                img = img.to(self.compute_device)
+            self.cache[index] = img
+            while len(self.cache) > 2:
+                self.cache.popitem(last=False)
+        self.cache.move_to_end(index)
+        return self.cache[index]
+
+    def __len__(self):
+        return len(self.img_paths)
+
 
 class AsyncVideoFrameLoader:
        
@@ -215,17 +249,10 @@ def load_video_frames_from_jpg_images(
         )
         return lazy_images, lazy_images.video_height, lazy_images.video_width
 
-    images = torch.zeros(num_frames, 3, image_size, image_size, dtype=torch.float32)
-    for n, img_path in enumerate(tqdm(img_paths, desc="frame loading (JPEG)")):
-        images[n], video_height, video_width = _load_img_as_tensor(img_path, image_size)
-    if not offload_video_to_cpu:
-        images = images.to(compute_device)
-        img_mean = img_mean.to(compute_device)
-        img_std = img_std.to(compute_device)
-
-    images -= img_mean
-    images /= img_std
-    return images, video_height, video_width
+    images = BoundedVideoFrameLoader(
+        img_paths, image_size, offload_video_to_cpu, img_mean, img_std, compute_device
+    )
+    return images, images.video_height, images.video_width
 
 def load_video_frames_from_video_file(
     video_path,

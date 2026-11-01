@@ -59,6 +59,21 @@ def mask_overlay(frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return blend_mask(color, frame, np.rint(mask * 0.4).astype(np.uint8))
 
 
+def prune_tracking_state(predictor, state: dict, frame_index: int) -> None:
+    """Keep the exact recent history used by forward tracking, plus all seed frames."""
+    horizon = max(predictor.num_maskmem * predictor.memory_temporal_stride_for_eval,
+                  predictor.max_obj_ptrs_in_encoder)
+    oldest = frame_index - horizon + 1
+    for output_dict in state["output_dict_per_obj"].values():
+        history = output_dict["non_cond_frame_outputs"]
+        for index in list(history):
+            if index < oldest:
+                del history[index]
+            else:
+                # Only conditioning frames reuse full-resolution alpha during propagation.
+                history[index].pop("alpha", None)
+
+
 def video_masks(input_path: str, total: int, height: int, width: int,
                 seed: np.ndarray) -> Iterator[tuple[int, np.ndarray]]:
     predictor = load_predictor()
@@ -88,7 +103,9 @@ def video_masks(input_path: str, total: int, height: int, width: int,
                     for index, _, _, alpha, _ in stream:
                         if not 0 <= index < total:
                             raise ValueError(f"SAM2Matting returned frame {index} outside requested range")
-                        yield index, matte_to_uint8(alpha, height, width)
+                        matte = matte_to_uint8(alpha, height, width)
+                        prune_tracking_state(predictor, state, index)
+                        yield index, matte
                 finally:
                     stream.close()
     finally:

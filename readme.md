@@ -18,6 +18,8 @@ uv run string-lights poses VIDEO.mp4 --frames 500
 
 Mask generation uses SAM2Matting Base+ video tracking, with soft opacity caches
 (0–255) for natural hand boundaries. Public weights download on first use; CUDA is required.
+Frames are decoded from disk on demand with a two-frame cache; forward tracking
+retains only its required recent memory plus the seed frame.
 Supply a first-frame grayscale hand mask (white hands, black background):
 
 ```bash
