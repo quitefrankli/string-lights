@@ -1,317 +1,262 @@
 const STRINGS = ['E2', 'A2', 'D3', 'G3', 'B3', 'E4'];
-const AUDIO_FPS = 22050 / 512;  // ~43.066 audio frames per second
-const COL_DUR = 0.25;           // seconds per grid column
-const FRAMES_PER_COL = Math.round(COL_DUR * AUDIO_FPS); // ~11 audio frames per col
-const CELL_W = 20;              // px per column
-
-let numCols = 0;
-let grid = []; // grid[stringIdx][colIdx] = 0 | 1
-
+let notes = [];
+let gridInterval = 0.25;
+let pixelsPerSecond = 80;
+let transcriptionDuration = 0;
+let loadGeneration = 0;
+const history = [];
 const video = document.getElementById('video');
 const playhead = document.getElementById('playhead');
 const gridWrap = document.getElementById('grid-wrap');
 const labelsEl = document.getElementById('labels');
+const rowsEl = document.getElementById('rows');
+const selEl = document.getElementById('selection');
+let selection = null;
+let copyBuffer = null;
+let gesture = null;
+let reverseStrings = false;
 
-function initGrid(n) {
-  grid = STRINGS.map(() => new Array(n).fill(0));
+function assignedString(row) {
+  return reverseStrings ? STRINGS.length - 1 - row : row;
 }
 
-function buildUI() {
-  const secs = Math.max(COL_DUR, (isFinite(video.duration) ? video.duration : null) || 10);
-  numCols = Math.ceil(secs / COL_DUR);
-  initGrid(numCols);
+function noteTitle(note) {
+  return `${STRINGS[assignedString(note.string)]} at ${note.start.toFixed(3)}s — drag to move; Alt = free timing; right-click = remove`;
+}
 
-  // String labels (high → low)
+function timelineDuration() {
+  return Math.max(10, Number.isFinite(video.duration) ? video.duration : 0,
+    transcriptionDuration, ...notes.map(note => note.end));
+}
+
+function snapshot() {
+  return { notes: notes.map(note => ({ ...note })), gridInterval, transcriptionDuration };
+}
+
+function saveUndo() { loadGeneration++; history.push(snapshot()); }
+
+function renderTimeline() {
+  const duration = timelineDuration();
+  const width = Math.ceil(duration * pixelsPerSecond);
   labelsEl.innerHTML = '';
-  for (let si = STRINGS.length - 1; si >= 0; si--) {
-    const d = document.createElement('div');
-    d.className = 'string-label';
-    d.textContent = STRINGS[si];
-    labelsEl.appendChild(d);
-  }
-
-  // Time ruler: tick every col (0.25s), label every other col (0.5s)
+  rowsEl.innerHTML = '';
   const timeEl = document.getElementById('time-numbers');
   timeEl.innerHTML = '';
-  for (let c = 0; c < numCols; c++) {
-    const d = document.createElement('div');
-    d.style.width = CELL_W + 'px';
-    d.style.flexShrink = '0';
-    d.className = 'hcell time-tick';
-    if (c % 2 === 0) d.textContent = (c * COL_DUR).toFixed(1) + 's';
-    timeEl.appendChild(d);
+  document.getElementById('grid-inner').style.width = width + 'px';
+  // Thin grid lines stay visible when zoomed out without changing snap timing.
+  const tickStep = gridInterval * Math.max(1, Math.ceil(Math.max(12 / pixelsPerSecond, duration / 2000) / gridInterval));
+  for (let t = 0; t < duration; t += tickStep) {
+    const tick = document.createElement('div');
+    tick.className = 'hcell time-tick';
+    tick.style.width = tickStep * pixelsPerSecond + 'px';
+    tick.textContent = t.toFixed(2) + 's';
+    timeEl.appendChild(tick);
   }
-
-  // Grid rows (high → low)
-  const rowsEl = document.getElementById('rows');
-  rowsEl.innerHTML = '';
   for (let si = STRINGS.length - 1; si >= 0; si--) {
+    const label = document.createElement('div');
+    label.className = 'string-label';
+    label.textContent = STRINGS[assignedString(si)];
+    label.dataset.s = si;
+    labelsEl.appendChild(label);
     const row = document.createElement('div');
-    row.className = 'row';
-    for (let c = 0; c < numCols; c++) {
-      const cell = document.createElement('div');
-      cell.className = 'cell';
-      cell.dataset.s = si;
-      cell.dataset.f = c;
-      row.appendChild(cell);
-    }
+    row.className = 'row note-row';
+    row.dataset.s = si;
+    row.style.width = width + 'px';
+    row.style.backgroundSize = tickStep * pixelsPerSecond + 'px 100%';
+    notes.forEach((note, index) => {
+      if (note.string !== si) return;
+      const marker = document.createElement('div');
+      marker.className = 'note';
+      marker.dataset.note = index;
+      marker.style.left = note.start * pixelsPerSecond + 'px';
+      marker.style.width = Math.max(6, (note.end - note.start) * pixelsPerSecond) + 'px';
+      marker.title = noteTitle(note);
+      row.appendChild(marker);
+    });
     rowsEl.appendChild(row);
   }
-
-  renderGrid();
+  updateSelectionEl();
   updatePlayhead();
-  loadNpy(currentStem());
 }
-
-// ── Rendering ──────────────────────────────────────────────────────────────
-
-function cellEl(si, c) {
-  return document.querySelector(`.cell[data-s="${si}"][data-f="${c}"]`);
-}
-
-function renderCell(si, c) {
-  const el = cellEl(si, c);
-  if (el) el.classList.toggle('active', grid[si][c] === 1);
-}
-
-function renderGrid() {
-  STRINGS.forEach((_, si) => {
-    for (let c = 0; c < numCols; c++) renderCell(si, c);
-  });
-}
-
-async function loadNpy(stem) {
-  const r = await fetch('/load/' + stem);
-  if (!r.ok) return;
-  const { frames } = await r.json();
-  for (let col = 0; col < numCols; col++) {
-    const f = col * FRAMES_PER_COL;
-    if (f >= frames.length) break;
-    for (let si = 0; si < STRINGS.length; si++) {
-      grid[si][col] = frames[f][si];
-    }
-  }
-  renderGrid();
-}
-
-// ── Playhead ───────────────────────────────────────────────────────────────
 
 function updatePlayhead() {
-  const x = (video.currentTime / COL_DUR) * CELL_W;
+  const x = video.currentTime * pixelsPerSecond;
   playhead.style.left = x + 'px';
-
   if (!video.paused) {
-    const labelsW = labelsEl.offsetWidth;
-    const viewW = gridWrap.offsetWidth - labelsW;
-    const scrollX = gridWrap.scrollLeft;
-    if (x < scrollX || x > scrollX + viewW - CELL_W * 4) {
-      gridWrap.scrollLeft = Math.max(0, x - viewW / 3);
+    const width = gridWrap.offsetWidth - labelsEl.offsetWidth;
+    if (x < gridWrap.scrollLeft || x > gridWrap.scrollLeft + width - 80) {
+      gridWrap.scrollLeft = Math.max(0, x - width / 3);
     }
   }
 }
-
 video.addEventListener('timeupdate', updatePlayhead);
 video.addEventListener('seeked', updatePlayhead);
 
-// ── Playhead dragging ──────────────────────────────────────────────────────
-
-function clientXToCol(clientX) {
-  const wrapRect = gridWrap.getBoundingClientRect();
-  const x = clientX - wrapRect.left - labelsEl.offsetWidth + gridWrap.scrollLeft;
-  return Math.max(0, Math.min(numCols - 1, Math.floor(x / CELL_W)));
+function rawTime(clientX) {
+  const rect = document.getElementById('grid-inner').getBoundingClientRect();
+  return Math.max(0, Math.min(timelineDuration(), (clientX - rect.left) / pixelsPerSecond));
 }
-
-function clientXToTime(clientX) {
-  return clientXToCol(clientX) * COL_DUR;
+function editingTime(time, altKey) {
+  return snapTime(time, gridInterval, document.getElementById('snap').checked && !altKey);
 }
-
-let draggingPlayhead = false;
-
-playhead.addEventListener('mousedown', e => {
-  e.preventDefault();
-  e.stopPropagation();
-  draggingPlayhead = true;
-});
-
-document.addEventListener('mousemove', e => {
-  if (!draggingPlayhead) return;
-  video.currentTime = clientXToTime(e.clientX);
-});
-
-// ── Seek by clicking time ruler / drag to select ──────────────────────────
-
-const selEl = document.getElementById('selection');
-let selStart = null;
-let selEnd = null;
-let copyBuffer = null;
-let selectingRange = false;
+function pointerTime(event) { return editingTime(rawTime(event.clientX), event.altKey); }
 
 function updateSelectionEl() {
-  if (selStart === null) { selEl.style.display = 'none'; return; }
-  const c0 = Math.min(selStart, selEnd ?? selStart);
-  const c1 = Math.max(selStart, selEnd ?? selStart);
-  selEl.style.display = 'block';
-  selEl.style.left = (c0 * CELL_W) + 'px';
-  selEl.style.width = ((c1 - c0 + 1) * CELL_W) + 'px';
+  selEl.style.display = selection ? 'block' : 'none';
+  if (!selection) return;
+  selEl.style.left = Math.min(...selection) * pixelsPerSecond + 'px';
+  selEl.style.width = Math.abs(selection[1] - selection[0]) * pixelsPerSecond + 'px';
 }
 
-const timeNumbers = document.getElementById('time-numbers');
-timeNumbers.addEventListener('mousedown', e => {
-  e.preventDefault();
-  selectingRange = true;
-  selStart = clientXToCol(e.clientX);
-  selEnd = selStart;
+playhead.addEventListener('mousedown', event => {
+  event.preventDefault();
+  event.stopPropagation();
+  document.activeElement?.blur();
+  gesture = { type: 'playhead' };
+});
+document.getElementById('time-numbers').addEventListener('mousedown', event => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  document.activeElement?.blur();
+  selection = [pointerTime(event), pointerTime(event)];
+  gesture = { type: 'selection', clientX: event.clientX };
   updateSelectionEl();
 });
 
-document.addEventListener('mousemove', e => {
-  if (!selectingRange) return;
-  selEnd = clientXToCol(e.clientX);
-  updateSelectionEl();
-});
-
-// ── Cell painting ──────────────────────────────────────────────────────────
-
-let painting = false;
-let paintValue = 0;
-const history = [];
-let snapshotBeforePaint = null;
-
-function snapshot() {
-  return grid.map(row => row.slice());
-}
-
-document.getElementById('rows').addEventListener('mousedown', e => {
-  const cell = e.target.closest('.cell');
-  if (!cell) return;
-  e.preventDefault();
-  const si = parseInt(cell.dataset.s);
-  const c = parseInt(cell.dataset.f);
-  paintValue = e.button === 2 ? 0 : (grid[si][c] === 1 ? 0 : 1);
-  snapshotBeforePaint = snapshot();
-  painting = true;
-  grid[si][c] = paintValue;
-  renderCell(si, c);
-});
-
-document.getElementById('rows').addEventListener('mouseover', e => {
-  if (!painting) return;
-  const cell = e.target.closest('.cell');
-  if (!cell) return;
-  const si = parseInt(cell.dataset.s);
-  const c = parseInt(cell.dataset.f);
-  grid[si][c] = paintValue;
-  renderCell(si, c);
-});
-
-document.addEventListener('mouseup', e => {
-  if (painting && snapshotBeforePaint) history.push(snapshotBeforePaint);
-  snapshotBeforePaint = null;
-  painting = false;
-  draggingPlayhead = false;
-  if (selectingRange) {
-    selectingRange = false;
-    const col = clientXToCol(e.clientX);
-    if (selStart === col) {
-      // plain click — seek and clear selection
-      video.currentTime = col * COL_DUR;
-      selStart = null;
-      updateSelectionEl();
+rowsEl.addEventListener('mousedown', event => {
+  if (event.button !== 0 && event.button !== 2) return;
+  const row = event.target.closest('.note-row');
+  if (!row) return;
+  event.preventDefault();
+  document.activeElement?.blur();
+  const marker = event.target.closest('.note');
+  if (marker) {
+    const index = Number(marker.dataset.note);
+    if (event.button === 2) {
+      saveUndo();
+      notes.splice(index, 1);
+      renderTimeline();
+    } else {
+      gesture = { type: 'note', index, clientX: event.clientX,
+        original: { ...notes[index] }, before: snapshot(), moved: false };
     }
+    return;
   }
+  if (event.button === 2) return;
+  saveUndo();
+  const start = pointerTime(event);
+  notes.push({ string: Number(row.dataset.s), start, end: start + gridInterval, value: 1 });
+  gesture = { type: 'paint', string: Number(row.dataset.s), last: start };
+  renderTimeline();
+});
+rowsEl.addEventListener('contextmenu', event => event.preventDefault());
+
+document.addEventListener('mousemove', event => {
+  if (!gesture) return;
+  if (gesture.type === 'playhead') video.currentTime = Math.min(rawTime(event.clientX), video.duration || Infinity);
+  if (gesture.type === 'selection') {
+    selection[1] = pointerTime(event);
+    updateSelectionEl();
+  }
+  if (gesture.type === 'note' && (gesture.moved || Math.abs(event.clientX - gesture.clientX) > 3)) {
+    const start = editingTime(gesture.original.start + (event.clientX - gesture.clientX) / pixelsPerSecond, event.altKey);
+    notes[gesture.index] = { ...gesture.original, start,
+      end: start + gesture.original.end - gesture.original.start };
+    gesture.moved = true;
+    renderTimeline();
+  }
+  if (gesture.type === 'paint' && document.getElementById('snap').checked && !event.altKey) {
+    const row = event.target.closest?.('.note-row');
+    if (!row) return;
+    const start = pointerTime(event);
+    const string = Number(row.dataset.s);
+    if (start === gesture.last && string === gesture.string) return;
+    if (!notes.some(note => note.string === string && Math.abs(note.start - start) < 1e-8)) {
+      notes.push({ string, start, end: start + gridInterval, value: 1 });
+      renderTimeline();
+    }
+    gesture.last = start;
+    gesture.string = string;
+  }
+});
+document.addEventListener('mouseup', event => {
+  if (gesture?.type === 'note') {
+    if (gesture.moved) history.push(gesture.before);
+    else { history.push(gesture.before); notes.splice(gesture.index, 1); renderTimeline(); }
+  }
+  if (gesture?.type === 'selection' && Math.abs(event.clientX - gesture.clientX) < 3) {
+    video.currentTime = Math.min(pointerTime(event), video.duration || Infinity);
+    selection = null;
+    updateSelectionEl();
+  }
+  gesture = null;
 });
 
 const STRING_KEYS = { q: 5, w: 4, e: 3, r: 2, t: 1, y: 0 };
-
 function isInputFocused() {
-  const t = document.activeElement?.tagName;
-  return t === 'INPUT' || t === 'TEXTAREA';
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
 }
-
-document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
-    e.preventDefault();
-    if (!history.length) return;
-    grid = history.pop();
-    renderGrid();
-    return;
-  }
-
+document.addEventListener('keydown', event => {
   if (isInputFocused()) return;
-
-  const intervalSec = (parseFloat(document.getElementById('interval').value) || 250) / 1000;
-
-  if (e.key === ' ') {
-    e.preventDefault();
+  if ((event.ctrlKey || event.metaKey) && event.key === 'z') {
+    if (!history.length) return;
+    event.preventDefault();
+    const previous = history.pop();
+    notes = previous.notes;
+    gridInterval = previous.gridInterval;
+    transcriptionDuration = previous.transcriptionDuration;
+    document.getElementById('grid-interval').value = gridInterval * 1000;
+    renderTimeline();
+    return;
+  }
+  const interval = (Number(document.getElementById('interval').value) || 250) / 1000;
+  if (event.key === ' ') {
+    event.preventDefault();
     if (video.paused) video.play(); else video.pause();
-    return;
-  }
-
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    video.currentTime = 0;
-    return;
-  }
-
-  if (e.key === 'ArrowRight') {
-    e.preventDefault();
-    video.currentTime = Math.min(video.currentTime + intervalSec, video.duration || 1e9);
-    return;
-  }
-
-  if (e.key === 'ArrowLeft') {
-    e.preventDefault();
-    video.currentTime = Math.max(video.currentTime - intervalSec, 0);
-    return;
-  }
-
-  if ((e.key === 'd' || e.key === 'a') && video.paused) {
-    const c = Math.floor(video.currentTime / COL_DUR);
-    history.push(snapshot());
-    for (let si = 0; si < STRINGS.length; si++) {
-      if (e.key === 'd') {
-        for (let col = numCols - 1; col > c; col--) grid[si][col] = grid[si][col - 1];
-        grid[si][c] = 0;
-      } else {
-        for (let col = c; col < numCols - 1; col++) grid[si][col] = grid[si][col + 1];
-        grid[si][numCols - 1] = 0;
-      }
-    }
-    renderGrid();
-    return;
-  }
-
-  if (e.key === 'c' && selStart !== null) {
-    const c0 = Math.min(selStart, selEnd ?? selStart);
-    const c1 = Math.max(selStart, selEnd ?? selStart);
-    copyBuffer = STRINGS.map((_, si) => grid[si].slice(c0, c1 + 1));
-    return;
-  }
-
-  if (e.key === 'v' && copyBuffer !== null && video.paused) {
-    const c = Math.floor(video.currentTime / COL_DUR);
-    history.push(snapshot());
-    const width = copyBuffer[0].length;
-    for (let si = 0; si < STRINGS.length; si++) {
-      for (let i = 0; i < width && c + i < numCols; i++) {
-        grid[si][c + i] = copyBuffer[si][i];
-      }
-    }
-    renderGrid();
-    return;
-  }
-
-  if (e.key in STRING_KEYS && video.paused) {
-    const si = STRING_KEYS[e.key];
-    const c = Math.floor(video.currentTime / COL_DUR);
-    if (c < numCols) {
-      history.push(snapshot());
-      grid[si][c] ^= 1;
-      renderCell(si, c);
-    }
+  } else if (event.key === 'Enter') {
+    event.preventDefault(); video.currentTime = 0;
+  } else if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+    event.preventDefault();
+    video.currentTime = Math.max(0, Math.min(video.duration || Infinity,
+      video.currentTime + (event.key === 'ArrowRight' ? interval : -interval)));
+  } else if (event.key === 'c' && selection) {
+    const start = Math.min(...selection), end = Math.max(...selection);
+    copyBuffer = { duration: end - start,
+      notes: notes.filter(note => note.start >= start && note.start < end)
+        .map(note => ({ ...note, start: note.start - start, end: note.end - start })) };
+  } else if (event.key === 'v' && copyBuffer && video.paused) {
+    saveUndo();
+    const start = editingTime(video.currentTime, event.altKey);
+    notes = notes.filter(note => note.start < start || note.start >= start + copyBuffer.duration);
+    notes.push(...copyBuffer.notes.map(note => ({ ...note, start: note.start + start, end: note.end + start })));
+    renderTimeline();
+  } else if ((event.key === 'a' || event.key === 'd') && video.paused) {
+    saveUndo();
+    const start = editingTime(video.currentTime, event.altKey);
+    if (event.key === 'a') notes = notes.filter(note => note.start < start || note.start >= start + gridInterval);
+    notes = notes.map(note => note.start >= start ? { ...note,
+      start: Math.max(0, note.start + (event.key === 'd' ? gridInterval : -gridInterval)),
+      end: Math.max(0, note.end + (event.key === 'd' ? gridInterval : -gridInterval)) } : note);
+    renderTimeline();
+  } else if (event.key in STRING_KEYS && video.paused) {
+    saveUndo();
+    const string = STRING_KEYS[event.key], start = editingTime(video.currentTime, event.altKey);
+    const index = notes.findIndex(note => note.string === string && Math.abs(note.start - start) < 1e-8);
+    if (index >= 0) notes.splice(index, 1);
+    else notes.push({ string, start, end: start + gridInterval, value: 1 });
+    renderTimeline();
   }
 });
-document.getElementById('rows').addEventListener('contextmenu', e => e.preventDefault());
+
+async function loadNpy(stem, generation) {
+  const response = await fetch('/load/' + stem);
+  if (!response.ok || generation !== loadGeneration) return;
+  const { frames } = await response.json();
+  if (generation !== loadGeneration) return;
+  notes = notesFromFrames(frames).map(note => ({ ...note, string: assignedString(note.string) }));
+  transcriptionDuration = frames.length / TRANSCRIPTION_FPS;
+  renderTimeline();
+}
 
 // ── Video loading ──────────────────────────────────────────────────────────
 
@@ -330,6 +275,12 @@ function setStatus(msg, kind = '') {
 function loadVideo() {
   const stem = currentStem();
   if (!stem) return;
+  const generation = ++loadGeneration;
+  notes = []; history.length = 0; selection = null; copyBuffer = null; gesture = null;
+  transcriptionDuration = 0; gridInterval = 0.25;
+  document.getElementById('grid-interval').value = 250;
+  renderTimeline();
+  loadNpy(stem, generation);
   video.src = '/video/' + stem;
   video.load();
   loadProjections(stem);
@@ -369,39 +320,78 @@ async function refreshFileList() {
 }
 
 document.getElementById('filename').addEventListener('change', loadVideo);
-video.addEventListener('loadedmetadata', buildUI);
-
-// ── Toolbar actions ────────────────────────────────────────────────────────
+video.addEventListener('loadedmetadata', renderTimeline);
 
 document.getElementById('clear-btn').addEventListener('click', () => {
-  initGrid(numCols);
-  renderGrid();
+  saveUndo(); notes = []; renderTimeline();
 });
-
-function gridToAudioFrames() {
-  const totalAudioFrames = numCols * FRAMES_PER_COL;
-  const frames = [];
-  for (let f = 0; f < totalAudioFrames; f++) {
-    const col = Math.floor(f / FRAMES_PER_COL);
-    frames.push(STRINGS.map((_, si) => grid[si][col]));
-  }
-  return frames;
-}
-
-document.getElementById('export-btn').addEventListener('click', async () => {
-  const filename = currentStem() || 'clip1';
-  const frames = gridToAudioFrames();
-  const resp = await fetch('/export', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ frames, filename }),
+document.getElementById('reverse-strings').addEventListener('change', event => {
+  reverseStrings = event.target.checked;
+  labelsEl.querySelectorAll('.string-label').forEach(label => {
+    label.textContent = STRINGS[assignedString(Number(label.dataset.s))];
   });
-  if (!resp.ok) { alert('Export failed'); return; }
-  const blob = await resp.blob();
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename + '.npy';
-  a.click();
+  rowsEl.querySelectorAll('.note').forEach(marker => {
+    marker.title = noteTitle(notes[Number(marker.dataset.note)]);
+  });
+  drawOverlay();
+});
+document.getElementById('grid-interval').addEventListener('change', event => {
+  const value = Number(event.target.value) / 1000;
+  if (Number.isFinite(value) && value >= 0.001 && value <= 10) {
+    gridInterval = value; renderTimeline();
+  } else event.target.value = gridInterval * 1000;
+});
+document.getElementById('zoom').addEventListener('input', event => {
+  const centerTime = (gridWrap.scrollLeft + (gridWrap.offsetWidth - labelsEl.offsetWidth) / 2) / pixelsPerSecond;
+  pixelsPerSecond = Number(event.target.value);
+  renderTimeline();
+  gridWrap.scrollLeft = Math.max(0, centerTime * pixelsPerSecond - (gridWrap.offsetWidth - labelsEl.offsetWidth) / 2);
+});
+document.getElementById('convert-tempo-btn').addEventListener('click', () => {
+  const source = Number(document.getElementById('source-bpm').value);
+  const target = Number(document.getElementById('target-bpm').value);
+  const ratio = source / target;
+  if (!Number.isFinite(ratio) || source <= 0 || target <= 0 ||
+      !Number.isFinite(timelineDuration() * ratio) || gridInterval * ratio < 0.001 ||
+      timelineDuration() * ratio > 86400) {
+    setStatus('Enter positive BPM values; converted duration must be under 24 hours and grid spacing at least 1 ms.', 'err');
+    return;
+  }
+  saveUndo(); video.pause();
+  notes = scaleNotes(notes, ratio);
+  transcriptionDuration *= ratio;
+  gridInterval *= ratio;
+  document.getElementById('grid-interval').value = gridInterval * 1000;
+  document.getElementById('source-bpm').value = target;
+  renderTimeline();
+  setStatus(`Tempo converted: ${source} → ${target} BPM. Undo: Ctrl/Cmd+Z.`, 'ok');
+});
+document.getElementById('export-btn').addEventListener('click', async () => {
+  const filename = currentStem();
+  if (!filename) { setStatus('Choose a recording before exporting.', 'err'); return; }
+  const button = document.getElementById('export-btn');
+  button.disabled = true;
+  const outputNotes = notes.map(note => ({ ...note, string: assignedString(note.string) }));
+  const payload = { filename, frames: notesToFrames(outputNotes, Math.max(transcriptionDuration, video.duration || 0)) };
+  const save = overwrite => fetch('/export', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, overwrite }),
+  });
+  try {
+    let response = await save(false);
+    if (response.status === 409) {
+      if (!window.confirm(`data/input/${filename}.npy already exists. Overwrite it with the current transcription?`)) {
+        setStatus('Export cancelled.');
+        return;
+      }
+      response = await save(true);
+    }
+    if (!response.ok) throw new Error('Could not save transcription.');
+    const result = await response.json();
+    setStatus(`Saved ${result.saved}`, 'ok');
+  } catch (error) {
+    setStatus('Export failed: ' + error.message, 'err');
+  } finally { button.disabled = false; }
 });
 
 // ── Live string overlay ────────────────────────────────────────────────────
@@ -435,6 +425,7 @@ async function loadProjections(stem) {
     }
     const data = await r.json();
     projCache[stem] = data;
+    if (stem !== currentStem()) return;
     projData = data;
     overlay.width = data.w;
     overlay.height = data.h;
@@ -445,14 +436,8 @@ async function loadProjections(stem) {
 }
 
 function isLit(si, t) {
-  const c = Math.floor(t / COL_DUR);
-  if (c < 0 || !grid[si]) return false;
-  for (let cc = c; cc >= 0; cc--) {
-    if (grid[si][cc] === 1) {
-      return (t - cc * COL_DUR) <= HOLD_DURATION;
-    }
-  }
-  return false;
+  return notes.some(note => note.string === si && t >= note.start &&
+    t < Math.max(note.end, note.start + HOLD_DURATION));
 }
 
 function drawOverlay() {
@@ -468,7 +453,7 @@ function drawOverlay() {
   octx.lineCap = 'round';
   for (let si = 0; si < 6; si++) {
     if (!isLit(si, t)) continue;
-    const [x0, y0, x1, y1] = lines[STRINGS.length - 1 - si];
+    const [x0, y0, x1, y1] = lines[STRINGS.length - 1 - assignedString(si)];
     octx.beginPath();
     octx.moveTo(x0, y0);
     octx.lineTo(x1, y1);
@@ -484,5 +469,5 @@ rafLoop();
 
 // ── Init ───────────────────────────────────────────────────────────────────
 
-buildUI();
+renderTimeline();
 refreshFileList();

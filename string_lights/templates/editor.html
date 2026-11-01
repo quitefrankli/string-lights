@@ -8,12 +8,30 @@
 <body>
 
 <div id="toolbar">
-  <label>Interval (ms) <input type="number" id="interval" value="250" min="1" max="10000" step="1"></label>
+  <label>Seek (ms) <input type="number" id="interval" value="250" min="1" max="10000" step="1"></label>
+  <label>Grid (ms) <input type="number" id="grid-interval" value="250" min="1" max="10000" step="any"></label>
+  <label><input type="checkbox" id="snap" checked> Snap</label>
+  <label>Zoom <input type="range" id="zoom" min="40" max="800" value="80" step="10"></label>
   <label>File <select id="filename"></select></label>
   <button id="export-btn">Export .npy</button>
   <button id="clear-btn">Clear</button>
+  <details id="advanced">
+    <summary>Advanced</summary>
+    <div class="advanced-panel">
+      <label class="switch-label">
+        <input type="checkbox" id="reverse-strings" role="switch">
+        <span class="switch-track" aria-hidden="true"></span>
+        Reverse strings (E4 ↔ E2)
+      </label>
+      <strong>Convert transcription tempo</strong>
+      <label>Current BPM <input id="source-bpm" type="number" min="1" step="any" value="120"></label>
+      <label>Recording BPM <input id="target-bpm" type="number" min="1" step="any" value="120"></label>
+      <p>Scales all note timing from the start. The recording stays unchanged. Undo with Ctrl/Cmd+Z.</p>
+      <button id="convert-tempo-btn">Apply conversion</button>
+    </div>
+  </details>
   <span id="status" class="status"></span>
-  <span class="hint">click/drag = pluck &nbsp;|&nbsp; right-click = clear &nbsp;|&nbsp; Space = play/pause &nbsp;|&nbsp; ←→ = step interval &nbsp;|&nbsp; Enter = rewind &nbsp;|&nbsp; q w e a s d = toggle string</span>
+  <span class="hint">click = toggle pluck · drag note = move · Alt = free timing · right-click = remove · Space = play/pause · ←→ = seek · q w e r t y = strings · Ctrl/Cmd+Z = undo</span>
 </div>
 
 <div id="grid-wrap">
@@ -33,6 +51,7 @@
   </div>
 </div>
 
+<script src="/static/editor_timing.js"></script>
 <script src="/static/editor.js"></script>
 </body>
 </html>

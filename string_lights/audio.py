@@ -3,12 +3,10 @@ from pathlib import Path
 
 import numpy as np
 
-# Editor convention: each grid column = COL_DUR seconds, written as
-# FRAMES_PER_COL identical rows in the .npy. Effective row rate is therefore
-# FRAMES_PER_COL / COL_DUR (not 22050/512), and using anything else here
-# accumulates ~2% drift per second.
+# Preserve the existing .npy convention: eleven rows per quarter second.
 COL_DUR = 0.25
 FRAMES_PER_COL = 11
+TRANSCRIPTION_FPS = FRAMES_PER_COL / COL_DUR
 MIN_NOTE_FRAMES = 2  # ignore notes shorter than this (audio frames)
 
 
@@ -59,8 +57,7 @@ def get_strings_to_highlight(input_path: str, total_frames: int, video_fps: floa
 
     strings: list[list[int]] = []
     for vi in range(total_frames):
-        col = int((vi / video_fps) / COL_DUR)
-        ai = col * FRAMES_PER_COL
+        ai = int((vi / video_fps) * TRANSCRIPTION_FPS + 1e-9)
         if ai >= n_audio:
             strings.append([])
             continue

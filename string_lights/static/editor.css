@@ -7,7 +7,7 @@ body {
 
 /* ── Toolbar ── */
 #toolbar {
-  display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+  display: flex; align-items: center; gap: 12px; flex-shrink: 0; flex-wrap: wrap;
   padding: 10px 14px; background: #f0f0f0; border-bottom: 1px solid #ccc;
 }
 #toolbar label { color: #444; }
@@ -17,6 +17,31 @@ body {
   font-family: monospace; font-size: 13px;
 }
 #toolbar #interval { width: 70px; }
+#toolbar #grid-interval { width: 80px; }
+#toolbar #zoom { width: 100px; vertical-align: middle; }
+#advanced { position: relative; }
+#advanced summary { cursor: pointer; }
+.advanced-panel {
+  position: absolute; top: 26px; left: 0; z-index: 10;
+  width: 300px; padding: 16px; background: #fff;
+  border: 1px solid #bbb; box-shadow: 0 4px 16px #0003;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.advanced-panel input { width: 90px; }
+.advanced-panel p { line-height: 1.5; color: #666; }
+.switch-label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.switch-label input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch-track {
+  width: 32px; height: 18px; border-radius: 10px; background: #999;
+  position: relative; flex-shrink: 0;
+}
+.switch-track::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 14px; height: 14px; border-radius: 50%; background: #fff;
+}
+.switch-label input:checked + .switch-track { background: #3a7bd5; }
+.switch-label input:checked + .switch-track::after { left: 16px; }
+.switch-label input:focus-visible + .switch-track { outline: 2px solid #222; outline-offset: 2px; }
 #toolbar select { min-width: 180px; }
 #toolbar button {
   padding: 5px 14px; border-radius: 4px; border: none; cursor: pointer;
@@ -59,6 +84,7 @@ body {
 #grid-inner {
   display: flex; flex-direction: column;
   position: relative; /* anchor for playhead */
+  flex-shrink: 0;
 }
 
 /* ── Playhead ── */
@@ -123,6 +149,18 @@ body {
 /* ── Cells ── */
 #rows { display: flex; flex-direction: column; }
 .row { display: flex; flex-direction: row; height: 56px; }
+.note-row {
+  position: relative; flex-shrink: 0; cursor: crosshair;
+  border-bottom: 1px solid #ddd;
+  background-image: linear-gradient(to right, #ddd 1px, transparent 1px);
+  background-color: #f8f8f8;
+}
+.note {
+  position: absolute; top: 8px; height: 40px; min-width: 6px;
+  background: #3a7bd5; border: 1px solid #2463b3; border-radius: 3px;
+  cursor: ew-resize; user-select: none;
+}
+.note:hover { background: #275ea6; z-index: 1; }
 
 .cell {
   width: 20px; height: 56px; flex-shrink: 0;

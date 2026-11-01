@@ -79,3 +79,31 @@ def test_browser_video_converts_and_reuses_preview(tmp_path, monkeypatch):
     assert source.read_bytes() == b'hevc source'
     assert _browser_video(source) == preview
     assert len(calls) == 2
+
+
+def test_export_saves_and_requires_confirmation_before_overwrite(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    client = create_app().test_client()
+    payload = {'filename': 'clip', 'frames': [[0] * 6, [1] * 6]}
+    response = client.post('/export', json=payload)
+    assert response.status_code == 200
+    target = tmp_path / 'data/input/clip.npy'
+    np.testing.assert_array_equal(np.load(target), payload['frames'])
+    original = target.read_bytes()
+    payload['frames'] = [[2] * 6]
+    response = client.post('/export', json=payload)
+    assert response.status_code == 409
+    assert response.json['exists'] is True
+    assert target.read_bytes() == original
+    response = client.post('/export', json={**payload, 'overwrite': True})
+    assert response.status_code == 200
+    np.testing.assert_array_equal(np.load(target), payload['frames'])
+
+
+def test_export_rejects_path_traversal_and_invalid_frames(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    client = create_app().test_client()
+    for name in ['../escape', '/tmp/escape', 'a/b', 'a\\b', '', '..']:
+        assert client.post('/export', json={'filename': name, 'frames': [[0] * 6]}).status_code == 400
+    assert client.post('/export', json={'filename': 'clip', 'frames': [[1]]}).status_code == 400
+    assert not (tmp_path / 'data/input/clip.npy').exists()

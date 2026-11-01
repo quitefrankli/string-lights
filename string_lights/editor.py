@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-from flask import Flask, jsonify, request, send_file, send_from_directory, render_template
+from flask import Flask, jsonify, request, send_from_directory, render_template
 
 VIDEO_EXTS = [".mp4", ".avi", ".mov", ".mkv", ".flv", ".m4v"]
 INPUT_DIR = Path("data/input")
@@ -90,13 +90,32 @@ def create_app() -> Flask:
     @app.route("/export", methods=["POST"])
     def export():
         data = request.get_json()
-        arr = np.array(data["frames"], dtype=np.int64)  # (N, 6)
+        filename = data.get("filename")
+        if (not isinstance(filename, str) or not filename or filename in (".", "..")
+                or "/" in filename or "\\" in filename or "\0" in filename):
+            return jsonify({"error": "Invalid transcription name."}), 400
+        try:
+            arr = np.array(data["frames"], dtype=np.int64)
+            if arr.ndim != 2 or arr.shape[1] != 6:
+                raise ValueError
+        except (KeyError, ValueError, TypeError, OverflowError):
+            return jsonify({"error": "Expected an array with six string values per frame."}), 400
+        path = INPUT_DIR / f"{filename}.npy"
         buf = io.BytesIO()
         np.save(buf, arr)
-        buf.seek(0)
-        filename = data.get("filename", "clip1")
-        return send_file(buf, mimetype="application/octet-stream",
-                         as_attachment=True, download_name=f"{filename}.npy")
+        INPUT_DIR.mkdir(parents=True, exist_ok=True)
+        if data.get("overwrite") is True:
+            with tempfile.TemporaryDirectory(dir=INPUT_DIR) as temporary:
+                output = Path(temporary) / "transcription.npy"
+                output.write_bytes(buf.getvalue())
+                output.replace(path)
+        else:
+            try:
+                with path.open("xb") as output:
+                    output.write(buf.getvalue())
+            except FileExistsError:
+                return jsonify({"error": "Transcription already exists.", "exists": True}), 409
+        return jsonify({"saved": str(path)})
 
     @app.route("/load/<stem>")
     def load_npy(stem):
