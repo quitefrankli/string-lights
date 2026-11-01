@@ -12,7 +12,9 @@
   <label>Grid (ms) <input type="number" id="grid-interval" value="250" min="1" max="10000" step="any"></label>
   <label><input type="checkbox" id="snap" checked> Snap</label>
   <label>Zoom <input type="range" id="zoom" min="40" max="800" value="80" step="10"></label>
-  <label>File <select id="filename"></select></label>
+  <label>Video <select id="filename"></select></label>
+  <label>Transcription <select id="transcription"></select></label>
+  <button id="load-transcription-btn" title="Load the selected .npy without changing the video. Export saves under the video’s name.">Load .npy</button>
   <button id="export-btn">Export .npy</button>
   <button id="clear-btn">Clear</button>
   <details id="advanced">

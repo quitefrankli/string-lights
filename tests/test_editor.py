@@ -107,3 +107,37 @@ def test_export_rejects_path_traversal_and_invalid_frames(tmp_path, monkeypatch)
         assert client.post('/export', json={'filename': name, 'frames': [[0] * 6]}).status_code == 400
     assert client.post('/export', json={'filename': 'clip', 'frames': [[1]]}).status_code == 400
     assert not (tmp_path / 'data/input/clip.npy').exists()
+
+
+def test_editor_lists_and_loads_transcription_with_different_name(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    inputs = tmp_path / 'data/input'
+    inputs.mkdir(parents=True)
+    (inputs / 'recording.mp4').touch()
+    frames = np.zeros((44, 6), dtype=np.int64)
+    frames[6:8, 2] = 1
+    np.save(inputs / 'different take.npy', frames)
+    np.save(inputs / 'recording.npy', np.zeros((44, 6), dtype=np.int64))
+    client = create_app().test_client()
+    listing = client.get('/list').json
+    assert listing['transcriptions'] == ['different take', 'recording']
+    assert [item['stem'] for item in listing['items']] == ['recording']
+    response = client.get('/load/different%20take')
+    assert response.status_code == 200
+    assert response.json['frames'] == frames.tolist()
+
+
+def test_editor_rejects_invalid_transcription_without_loading(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    inputs = tmp_path / 'data/input'
+    inputs.mkdir(parents=True)
+    np.save(inputs / 'wrong-shape.npy', np.zeros((10, 3)))
+    np.save(inputs / 'nonfinite.npy', np.full((10, 6), np.nan))
+    (inputs / 'broken.npy').write_bytes(b'not a numpy file')
+    (inputs / 'empty.npy').touch()
+    client = create_app().test_client()
+    for stem in ['wrong-shape', 'nonfinite', 'broken', 'empty']:
+        response = client.get('/load/' + stem)
+        assert response.status_code == 400
+        assert 'six string values' in response.json['error']
+    assert client.get('/load/missing').status_code == 404

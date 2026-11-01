@@ -77,7 +77,10 @@ def create_app() -> Flask:
 
     @app.route("/list")
     def list_videos():
-        return jsonify({"items": _list_inputs()})
+        return jsonify({
+            "items": _list_inputs(),
+            "transcriptions": sorted(p.stem for p in INPUT_DIR.glob("*.npy") if p.is_file()),
+        })
 
     @app.route("/video/<stem>")
     def video(stem):
@@ -122,7 +125,14 @@ def create_app() -> Flask:
         p = INPUT_DIR / (stem + ".npy")
         if not p.exists():
             return "Not found", 404
-        arr = np.load(p)
+        try:
+            arr = np.load(p, allow_pickle=False)
+            if (arr.ndim != 2 or arr.shape[1] != 6
+                    or arr.dtype.kind not in "biuf"
+                    or not np.isfinite(arr).all() or (arr < 0).any()):
+                raise ValueError
+        except (ValueError, OSError, TypeError, EOFError):
+            return jsonify({"error": "Expected a numeric .npy array with six string values per frame."}), 400
         return jsonify({"frames": arr.tolist()})
 
     @app.route("/strings/<stem>")

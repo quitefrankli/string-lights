@@ -248,19 +248,44 @@ document.addEventListener('keydown', event => {
   }
 });
 
-async function loadNpy(stem, generation) {
-  const response = await fetch('/load/' + stem);
-  if (!response.ok || generation !== loadGeneration) return;
-  const { frames } = await response.json();
-  if (generation !== loadGeneration) return;
-  notes = notesFromFrames(frames).map(note => ({ ...note, string: assignedString(note.string) }));
-  transcriptionDuration = frames.length / TRANSCRIPTION_FPS;
-  renderTimeline();
+async function loadNpy(stem, generation, undoable = false) {
+  try {
+    const response = await fetch('/load/' + encodeURIComponent(stem));
+    if (generation !== loadGeneration) return;
+    if (!response.ok) throw new Error(response.status === 404 ? 'File not found.' : (await response.json()).error);
+    const { frames } = await response.json();
+    if (generation !== loadGeneration) return;
+    if (undoable) saveUndo();
+    notes = notesFromFrames(frames).map(note => ({ ...note, string: assignedString(note.string) }));
+    transcriptionDuration = frames.length / TRANSCRIPTION_FPS;
+    selection = null; copyBuffer = null; gesture = null;
+    renderTimeline();
+    setStatus(`Loaded ${stem}.npy. Export saves as ${currentStem()}.npy.`, 'ok');
+  } catch (error) {
+    if (generation === loadGeneration) setStatus('Load failed: ' + error.message, 'err');
+  }
 }
 
 // ── Video loading ──────────────────────────────────────────────────────────
 
 let availableItems = [];
+let availableTranscriptions = [];
+
+function populateTranscriptions(selected = '') {
+  const select = document.getElementById('transcription');
+  select.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = 'Choose .npy…';
+  select.appendChild(placeholder);
+  for (const stem of availableTranscriptions) {
+    const option = document.createElement('option');
+    option.value = stem;
+    option.textContent = stem + '.npy';
+    select.appendChild(option);
+  }
+  select.value = availableTranscriptions.includes(selected) ? selected : '';
+}
 
 function currentStem() {
   return document.getElementById('filename').value;
@@ -280,7 +305,8 @@ function loadVideo() {
   transcriptionDuration = 0; gridInterval = 0.25;
   document.getElementById('grid-interval').value = 250;
   renderTimeline();
-  loadNpy(stem, generation);
+  populateTranscriptions(stem);
+  if (availableTranscriptions.includes(stem)) loadNpy(stem, generation);
   video.src = '/video/' + stem;
   video.load();
   loadProjections(stem);
@@ -298,6 +324,7 @@ async function refreshFileList() {
   const resp = await fetch('/list');
   const data = await resp.json();
   availableItems = data.items || [];
+  availableTranscriptions = data.transcriptions || [];
   const sel = document.getElementById('filename');
   const prev = sel.value;
   sel.innerHTML = '';
@@ -320,6 +347,12 @@ async function refreshFileList() {
 }
 
 document.getElementById('filename').addEventListener('change', loadVideo);
+document.getElementById('load-transcription-btn').addEventListener('click', () => {
+  const stem = document.getElementById('transcription').value;
+  if (!currentStem() || !stem) { setStatus('Choose a video and transcription to load.', 'err'); return; }
+  video.pause();
+  loadNpy(stem, ++loadGeneration, true);
+});
 video.addEventListener('loadedmetadata', renderTimeline);
 
 document.getElementById('clear-btn').addEventListener('click', () => {
@@ -388,6 +421,11 @@ document.getElementById('export-btn').addEventListener('click', async () => {
     }
     if (!response.ok) throw new Error('Could not save transcription.');
     const result = await response.json();
+    if (!availableTranscriptions.includes(filename)) {
+      availableTranscriptions.push(filename);
+      availableTranscriptions.sort();
+      populateTranscriptions(document.getElementById('transcription').value || filename);
+    }
     setStatus(`Saved ${result.saved}`, 'ok');
   } catch (error) {
     setStatus('Export failed: ' + error.message, 'err');
