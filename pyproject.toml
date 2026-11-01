@@ -5,14 +5,15 @@ description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.3.1",
-    "numpy>=2.4.3",
-    "opencv-python>=4.13.0.92",
-    "torch>=2.0",
-    "transformers>=4.30",
+    "numpy>=1.26,<2",
+    "opencv-python>=4.10,<4.12",
+    "torch>=2.7",
     "Pillow>=10.0",
     "flask>=3.0",
     "torchvision>=0.15",
     "tqdm>=4.66",
+    "sam2matting",
+    "huggingface-hub>=1.0",
 ]
 
 [tool.uv]
@@ -34,3 +35,6 @@ markers = [
 
 [project.scripts]
 string-lights = "string_lights.__main__:main"
+
+[tool.uv.sources]
+sam2matting = { path = "vendor/sam2matting" }

@@ -3,14 +3,16 @@ import json
 import numpy as np
 import subprocess
 import threading
+from contextlib import closing
 from pathlib import Path
 from typing import Generator, Iterator
 
 from tqdm import tqdm
 
 from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
-from .config import POSE_RESOLUTION, PoseResolution, MASK_PROMPT, BOX_THRESHOLD, TEXT_THRESHOLD, SMOOTH_POSES, T_MIN_CUTOFF, T_BETA, R_MIN_CUTOFF, R_BETA, MAX_TRANSLATION_JUMP, MAX_ROTATION_JUMP
-from .masking import resolve_device, load_models, get_mask
+from .config import POSE_RESOLUTION, PoseResolution, MASK_MODEL_ID, MASK_CHECKPOINT, MASK_ENCODING, SMOOTH_POSES, T_MIN_CUTOFF, T_BETA, R_MIN_CUTOFF, R_BETA, MAX_TRANSLATION_JUMP, MAX_ROTATION_JUMP
+from .masking import video_masks, read_seed, seed_mask_path, blend_mask, mask_overlay
+from .mask_stabilization import stabilize_video_masks
 from .pose import estimate_pose, pose_jump, smooth_poses, Pose
 from .audio import get_strings_to_highlight, get_random_strings
 from .strings import draw_projected_strings_frame, draw_strings_frame
@@ -227,24 +229,26 @@ def compute_masks(
     frames: int | None = None,
     debug_writer: cv2.VideoWriter | None = None,
     frame_skip: int = 1,
+    seed_mask: str | Path | None = None,
+    stabilize: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Compute SAM2 masks every frame_skip frames, holding masks between updates.
-
-    Streams mask writes to a memmap file (if stem given) to avoid accumulating
-    all frames in RAM. Returns (keyframes (K,h,w) uint8, indices (K,) int32, meta).
-    """
+    """Track hands on every frame with SAM2Matting; sample the output cache if requested."""
     if frame_skip < 1:
         raise ValueError("frame_skip must be positive")
     cap = cv2.VideoCapture(input_path)
-    meta = _video_meta(cap, frames, path=input_path)
+    try:
+        meta = _video_meta(cap, frames, path=input_path)
+    finally:
+        cap.release()
     total, h, w = meta["total"], meta["h"], meta["w"]
-
-    device = resolve_device()
-    gd_processor, gd_model, sam_processor, sam_model = load_models(device)
-
-    # Pre-allocate max possible keyframes; actual count tracked by k.
-    # If stem given, stream directly to disk via memmap to avoid RAM accumulation.
-    n_max = max(1, -(-total // frame_skip))  # ceiling division
+    if total < 1:
+        raise ValueError("Input video has no frames")
+    seed_path = Path(seed_mask) if seed_mask else seed_mask_path(stem or Path(input_path).stem)
+    seed = read_seed(seed_path, h, w)
+    meta.update(model=MASK_MODEL_ID, checkpoint=MASK_CHECKPOINT, encoding=MASK_ENCODING,
+                seed_mask=str(seed_path), frame_skip=frame_skip,
+                stabilization="motion_median_3" if stabilize else "none")
+    n_max = -(-total // frame_skip)
     if stem is not None:
         out_path = _masks_tmp_path(stem)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -253,42 +257,40 @@ def compute_masks(
         buf = np.zeros((n_max, h, w), dtype=np.uint8)
 
     indices_list: list[int] = []
-    k = 0
     current = np.zeros((h, w), dtype=np.uint8)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    for i in range(total):
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if i % frame_skip == 0:
-            current = get_mask(
-                frame, MASK_PROMPT,
-                gd_processor, gd_model, sam_processor, sam_model,
-                device, BOX_THRESHOLD, TEXT_THRESHOLD,
-                debug_writer=debug_writer,
-            )
-            buf[k] = current
-            indices_list.append(i)
-            k += 1
-            if k % 30 == 0 or i == total - 1:
-                n_detected = sum(1 for j in range(k) if buf[j].any())
-                print(f"  masks: {i+1}/{total} frames, {n_detected}/{k} had detections")
-        elif debug_writer is not None:
-            vis = frame.copy()
-            overlay = vis.copy()
-            overlay[current.astype(bool)] = (0, 0, 200)
-            cv2.addWeighted(overlay, 0.4, vis, 0.6, 0, vis)
-            debug_writer.write(vis)
-    cap.release()
+    debug_cap = cv2.VideoCapture(input_path) if debug_writer is not None else None
+    seen = 0
+    detected = 0
+    try:
+        stream = video_masks(input_path, total, h, w, seed)
+        if stabilize:
+            stream = stabilize_video_masks(input_path, stream)
+        with closing(stream) as masks:
+            for i, mask in masks:
+                if i != seen:
+                    raise ValueError(f"Expected mask for frame {seen}, received {i}")
+                seen += 1
+                if i % frame_skip == 0:
+                    current = mask
+                    buf[len(indices_list)] = current
+                    indices_list.append(i)
+                    detected += int(current.any())
+                if debug_writer is not None:
+                    ret, vis = debug_cap.read()
+                    if not ret:
+                        raise ValueError(f"Could not read debug frame {i}")
+                    debug_writer.write(mask_overlay(vis, current))
+                if seen % 30 == 0 or seen == total:
+                    print(f"  masks: {seen}/{total} frames, {detected}/{len(indices_list)} cached masks had detections")
+        if seen != total:
+            raise ValueError(f"SAM2Matting returned {seen}/{total} frames; refusing incomplete cache")
+    finally:
+        if debug_cap is not None:
+            debug_cap.release()
+        if isinstance(buf, np.memmap):
+            buf.flush()
 
-    if k == 0:
-        k = 1
-        indices_list.append(0)
-
-    if isinstance(buf, np.memmap):
-        buf.flush()
-
-    return buf[:k], np.array(indices_list, dtype=np.int32), meta
+    return buf, np.array(indices_list, dtype=np.int32), meta
 
 
 def save_masks(stem: str, masks: np.ndarray, indices: np.ndarray, meta: dict) -> Path:
@@ -298,7 +300,7 @@ def save_masks(stem: str, masks: np.ndarray, indices: np.ndarray, meta: dict) ->
     np.savez_compressed(str(npz_path), masks=masks)
     np.savez_compressed(
         str(meta_path), indices=indices,
-        w=meta["w"], h=meta["h"], fps=meta["fps"], total=meta["total"],
+        **meta,
     )
     tmp = _masks_tmp_path(stem)
     if tmp.exists():
@@ -308,13 +310,14 @@ def save_masks(stem: str, masks: np.ndarray, indices: np.ndarray, meta: dict) ->
 
 
 def load_masks(stem: str) -> tuple[np.ndarray, np.ndarray, dict]:
-    data = np.load(str(masks_meta_path(stem)))
-    masks = np.load(str(masks_path(stem)))["masks"]
-    meta = {
-        "w": int(data["w"]), "h": int(data["h"]),
-        "fps": float(data["fps"]), "total": int(data["total"]),
-    }
-    return masks, data["indices"], meta
+    with np.load(masks_meta_path(stem)) as data:
+        if "encoding" not in data or data["encoding"].item() != MASK_ENCODING:
+            raise ValueError(f"Old binary mask cache for {stem}; regenerate with string-lights masks {stem} --force")
+        meta = {key: data[key].item() for key in data.files if key != "indices"}
+        indices = data["indices"].copy()
+    with np.load(masks_path(stem)) as data:
+        masks = data["masks"]
+    return masks, indices, meta
 
 
 def masks_iter(masks: np.ndarray, indices: np.ndarray, total: int) -> Iterator[np.ndarray]:
@@ -398,7 +401,7 @@ def render_video(
                     cv2.drawFrameAxes(frame, K, dist, rvec, tvec, axis_len)
                 draw_strings_frame(frame, i, rvec, tvec, strings[i], last_active, K, fps)
             if original is not None:
-                frame[mask.astype(bool)] = original[mask.astype(bool)]
+                frame = blend_mask(original, frame, mask)
             proc.stdin.write(np.ascontiguousarray(frame).tobytes())
             pbar.update(1)
         proc.stdin.close()
@@ -461,10 +464,7 @@ def process_video(
             try:
                 for frame, mask in zip(_stream_frames(cap2, total), masks_iter(masks_arr, indices, total)):
                     vis = frame.copy()
-                    overlay = vis.copy()
-                    overlay[mask.astype(bool)] = (0, 0, 200)
-                    cv2.addWeighted(overlay, 0.4, vis, 0.6, 0, vis)
-                    debug_writer.write(vis)
+                    debug_writer.write(mask_overlay(vis, mask))
             finally:
                 cap2.release()
         finally:

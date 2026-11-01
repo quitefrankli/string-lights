@@ -16,9 +16,22 @@ uv run string-lights masks cupid.mp4 --frames 500
 uv run string-lights poses VIDEO.mp4 --frames 500
 ```
 
-Mask generation computes masks on every frame by default (`--frame-skip 1`).
-Use `--frame-skip N` to opt into sampling. Skipped frames hold the most recent mask;
-regenerate with `--force` to change an existing cache's sampling interval.
+Mask generation uses SAM2Matting Base+ video tracking, with soft opacity caches
+(0–255) for natural hand boundaries. Public weights download on first use; CUDA is required.
+Supply a first-frame grayscale hand mask (white hands, black background):
+
+```bash
+uv run string-lights masks VIDEO.mp4 --seed-mask seed.png
+```
+
+The default seed path is `data/components/mask_seeds/VIDEO.png`.
+A motion-aligned three-frame median reduces isolated opacity flicker by default;
+use `--no-stabilize` to retain raw model output. Stable gaps can remain open,
+but this filter does not correct persistent segmentation errors.
+Tracking processes every frame; `--frame-skip N` samples the masks saved to cache
+(default: 1). Skipped frames hold the latest cached mask. Use `--force` to regenerate
+an existing cache. Old binary caches must be regenerated.
+The vendored SAM2Matting code and weights use CC BY-NC-SA 4.0 for non-commercial research.
 
 `poses` estimates ArUco board poses; `planar-track` generates markerless
 projections. All three commands accept `--force` to replace existing caches.

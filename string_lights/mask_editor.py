@@ -8,6 +8,8 @@ import cv2
 import numpy as np
 
 from .pipeline import masks_path, masks_meta_path, save_masks
+from .masking import mask_overlay
+from .config import MASK_ENCODING
 
 WIN = "Mask Editor"
 VIDEO_EXTS = [".mp4", ".avi", ".mov", ".mkv", ".flv", ".m4v"]
@@ -23,10 +25,11 @@ def _resolve_input(stem: str) -> Path | None:
 
 
 def _load_meta(stem: str) -> tuple[np.ndarray, dict]:
-    data = np.load(str(masks_meta_path(stem)))
-    meta = {"w": int(data["w"]), "h": int(data["h"]),
-            "fps": float(data["fps"]), "total": int(data["total"])}
-    return data["indices"].copy(), meta
+    with np.load(masks_meta_path(stem)) as data:
+        if "encoding" not in data or data["encoding"].item() != MASK_ENCODING:
+            raise ValueError("Old binary mask cache; regenerate masks with --force")
+        meta = {key: data[key].item() for key in data.files if key != "indices"}
+        return data["indices"].copy(), meta
 
 
 def _parse_npy_header(f):
@@ -61,13 +64,7 @@ def _ki(indices: np.ndarray, frame_idx: int) -> int:
 
 
 def _overlay(frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    if not mask.any():
-        return frame
-    out = frame.copy()
-    ov = out.copy()
-    ov[mask.astype(bool)] = (0, 0, 200)
-    cv2.addWeighted(ov, 0.4, out, 0.6, 0, out)
-    return out
+    return mask_overlay(frame, mask)
 
 
 def _get_frame(cap: cv2.VideoCapture, idx: int, h: int, w: int) -> np.ndarray:

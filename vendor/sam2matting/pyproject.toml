@@ -1,0 +1,19 @@
+# Upstream: https://github.com/FudanCVL/SAM2Matting
+# Revision: 73dd721d77b56749248aefe5e8824d7f61b9d13c (SAM2 tracker family only).
+# Local fix: move the matting input image to the compute device when CPU offloading.
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sam2matting"
+version = "0.1.0"
+requires-python = ">=3.12"
+license = {file = "LICENSE"}
+dependencies = ["torch>=2.7", "torchvision>=0.15", "numpy>=1.26,<2", "hydra-core>=1.3", "iopath>=0.1.10", "Pillow>=10", "tqdm>=4.66"]
+
+[tool.setuptools.packages.find]
+include = ["sam2*"]
+
+[tool.setuptools.package-data]
+sam2 = ["configs/*.yaml"]

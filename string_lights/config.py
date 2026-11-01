@@ -32,15 +32,10 @@ R_MIN_CUTOFF = 1.0   # Hz; lower = more smoothing of rotation when still
 R_BETA = 30         # responsiveness to fast rotation (units: per quat-speed)
 
 # Hand masking
-GD_MODEL_ID = "IDEA-Research/grounding-dino-tiny"
-# SAM2_MODEL_ID = "facebook/sam2-hiera-small"
-# SAM2_MODEL_ID = "facebook/sam2-hiera-base-plus"
-SAM2_MODEL_ID = "facebook/sam2.1-hiera-large"
-MASK_PROMPT = "hands"
-BOX_THRESHOLD = 0.35
-TEXT_THRESHOLD = 0.25
-MASK_THRESHOLD = 0.0   # SAM2 logit threshold; higher = tighter mask boundary
-MASK_DILATE_PX = 3    # dilation after masking to fill gaps
+MASK_MODEL_ID = "FudanCVL/SAM2Matting"
+MASK_CHECKPOINT = "checkpoints/SAM2Matting-SAM2.1Base+.pt"
+MASK_CONFIG = "configs/sam2matting-sam2.1base+.yaml"
+MASK_ENCODING = "alpha_u8"
 
 # String rendering
 NUM_STRINGS = 6
