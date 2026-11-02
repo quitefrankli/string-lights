@@ -1,4 +1,5 @@
 import io
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -12,17 +13,20 @@ INPUT_DIR = Path("data/input")
 
 
 def _browser_video(source: Path) -> Path:
-    preview = Path("data/components/editor-previews") / f"{source.name}.mp4"
+    source_key = hashlib.sha256(str(source.resolve()).encode()).hexdigest()[:16]
+    preview = Path("data/components/editor-previews") / f"{source.stem}-{source_key}.mp4"
     if preview.exists() and preview.stat().st_mtime_ns >= source.stat().st_mtime_ns:
         return preview
     probe = subprocess.run([
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name,pix_fmt", "-of", "json", str(source),
+        "ffprobe", "-v", "error",
+        "-show_entries", "stream=codec_type,codec_name,pix_fmt", "-of", "json", str(source),
     ], check=True, capture_output=True, text=True)
-    stream = json.loads(probe.stdout)["streams"][0]
-    if source.suffix.lower() == ".mp4" and stream == {
-        "codec_name": "h264", "pix_fmt": "yuv420p",
-    }:
+    streams = json.loads(probe.stdout)["streams"]
+    stream = next((s for s in streams if s.get("codec_type") == "video"), streams[0])
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    if (source.suffix.lower() == ".mp4" and stream.get("codec_name") == "h264"
+            and stream.get("pix_fmt") == "yuv420p"
+            and (audio is None or audio.get("codec_name") == "aac")):
         return source
     preview.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=preview.parent) as temporary:

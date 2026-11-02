@@ -138,6 +138,16 @@ def editor(port: int) -> None:
     app.run(host="localhost", port=port, debug=True)
 
 
+@main.command("lyrics-editor")
+@click.option("--port", type=int, default=8081, show_default=True)
+def lyrics_editor(port: int) -> None:
+    import webbrowser
+    from .lyrics_editor import create_lyrics_app
+
+    webbrowser.open(f"http://localhost:{port}")
+    create_lyrics_app().run(host="localhost", port=port)
+
+
 @main.command()
 @click.argument("filename")
 @click.option("--aruco", is_flag=True, help="Tune board-based ArUco coordinates.")

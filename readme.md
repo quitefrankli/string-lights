@@ -47,8 +47,12 @@ uv run string-lights run cupid.mp4 --frames 500 --pose-tracker planar
 
 `run` always reads existing caches. Choose `--pose-tracker aruco` (the default)
 for board poses or `--pose-tracker planar` for projections. Masks are loaded
-from cache unless `--disable-masking` is supplied. Missing or insufficient
-caches must be generated separately; rendering never runs SAM or tracking.
+from cache unless `--disable-masking` is supplied. If a mask cache ends before
+the video, remaining frames render without hand masking. If planar projections
+end early, remaining frames hold the last valid cached projection. Both fallbacks
+emit warnings and leave caches unchanged. Missing caches, projections with no
+valid frame to hold, and insufficient ArUco pose coverage must be generated
+separately; rendering never runs SAM or tracking.
 
 ### Convert .mov to .mp4 (with audio)
 ```bash
@@ -62,6 +66,42 @@ ffmpeg -i input.mp4 -ss 00:00:10 -to 00:00:30 -c copy output_clipped.mp4
 Replace `00:00:10` and `00:00:30` with your desired start and end timestamps (`HH:MM:SS`).
 
 ## Configuration
+
+To generate highlight data from a manually annotated tablature score, use
+`scripts/generate_transcription.py`. See [the score format and workflow](docs/tab-transcription.md).
+
+### Lyrics export
+
+In `uv run string-lights lyrics-editor`, click **Export** to choose a layout:
+
+- **Recommended + padding** (default): 1080 × 1920 portrait, fitting the full video
+  with black padding.
+- **Original aspect ratio**: source dimensions, without resizing or added padding.
+
+The preview follows the selected layout. Lyric coordinates are stored relative
+to the padded 1080 × 1920 editing canvas; original-aspect exports remove that
+padding while preserving text position and relative size within the video.
+Lyrics placed in the padding are outside the original-aspect output.
+Confirm **Export** in the popup to save lyrics and render, or cancel
+to continue editing. Independently choose the playback format:
+
+- **H.264 + AAC — broad playback support** (selected by default in the popup):
+  encodes audio as AAC at 320 kbps for sharing. This recompresses the audio.
+- **H.264 + original audio**: copies the source audio without quality loss;
+  compatibility depends on its codec.
+
+Both choices render video as H.264 in MP4 and support either layout. The source
+file is never modified.
+
+For readability on bright footage, select a lyric and adjust **Black backdrop**
+to control its opacity (0 = off), **Padding (px)** for space around the text, and
+**Softness (px)** for the smooth fade into the video. These settings are saved per
+lyric and used in both preview and export. The backdrop fades with the lyric.
+Existing lyrics default to no backdrop; new lyrics start at 65% opacity.
+
+The lyrics editor creates cached H.264/AAC previews when the source codecs are
+not browser compatible, including ALAC audio. Previews do not modify the source;
+exports still read the original video and use the selected playback format.
 
 ### Planar tuner
 

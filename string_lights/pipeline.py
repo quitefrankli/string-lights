@@ -2,6 +2,7 @@ import cv2
 import json
 import numpy as np
 import subprocess
+import sys
 import threading
 from contextlib import closing
 from pathlib import Path
@@ -320,11 +321,17 @@ def load_masks(stem: str) -> tuple[np.ndarray, np.ndarray, dict]:
     return masks, indices, meta
 
 
-def masks_iter(masks: np.ndarray, indices: np.ndarray, total: int) -> Iterator[np.ndarray]:
-    """Yield one mask per frame, holding each keyframe until the next index."""
+def masks_iter(
+    masks: np.ndarray, indices: np.ndarray, total: int, *, valid_frames: int | None = None,
+) -> Iterator[np.ndarray]:
+    """Hold sampled masks within cache coverage; yield empty masks beyond it."""
     K = len(indices)
     cur = 0
+    empty = np.zeros(masks.shape[1:], dtype=masks.dtype)
     for i in range(total):
+        if not K or (valid_frames is not None and i >= valid_frames):
+            yield empty
+            continue
         while cur + 1 < K and indices[cur + 1] <= i:
             cur += 1
         yield masks[cur]
@@ -344,6 +351,7 @@ def render_video(
     include_audio: bool = True,
     draw_axes: bool = True,
     truncate_audio: bool = False,
+    mask_frames: int | None = None,
 ) -> None:
     w, h, fps, total = meta["w"], meta["h"], meta["fps"], meta["total"]
     K = camera_matrix(w, h)
@@ -353,7 +361,7 @@ def render_video(
     cap = cv2.VideoCapture(input_path)
     frame_stream = _stream_frames(cap, total)
     if masks is not None:
-        mask_stream = masks_iter(masks[0], masks[1], total)
+        mask_stream = masks_iter(masks[0], masks[1], total, valid_frames=mask_frames)
     else:
         empty = np.zeros((h, w), dtype=np.uint8)
         mask_stream = (empty for _ in range(total))
@@ -437,19 +445,23 @@ def process_video(
     video_meta = _video_meta(cap, frames, path=input_path)
     cap.release()
 
-    def validate_cache(cache_meta: dict, name: str) -> None:
+    def validate_cache(cache_meta: dict, name: str, *, require_coverage: bool = True) -> None:
         if (cache_meta["w"], cache_meta["h"]) != (video_meta["w"], video_meta["h"]):
             raise ValueError(f"cached {name} dimensions do not match the input video")
-        if cache_meta["total"] < video_meta["total"]:
+        if require_coverage and cache_meta["total"] < video_meta["total"]:
             raise ValueError(f"cached {name} do not cover the requested video frames; regenerate the cache with the required --frames limit")
 
     masks_data = None
+    mask_frames = None
     if debug_masks or not disable_masking:
         if not masks_cached(stem):
             raise FileNotFoundError(f"No cached masks at {masks_path(stem)}. Generate them with: uv run string-lights masks {input_path}")
         print(f"  using cached masks ← {masks_path(stem)}")
         masks_arr, indices, mask_meta = load_masks(stem)
-        validate_cache(mask_meta, "masks")
+        validate_cache(mask_meta, "masks", require_coverage=False)
+        mask_frames = mask_meta["total"]
+        if mask_frames < video_meta["total"]:
+            print(f"Warning: mask cache covers {mask_frames}/{video_meta['total']} frames; using no mask for the remaining {video_meta['total'] - mask_frames} frames", file=sys.stderr)
         masks_data = (masks_arr, indices)
 
     if debug_masks:
@@ -462,7 +474,7 @@ def process_video(
         try:
             cap2 = cv2.VideoCapture(input_path)
             try:
-                for frame, mask in zip(_stream_frames(cap2, total), masks_iter(masks_arr, indices, total)):
+                for frame, mask in zip(_stream_frames(cap2, total), masks_iter(masks_arr, indices, total, valid_frames=mask_frames)):
                     vis = frame.copy()
                     debug_writer.write(mask_overlay(vis, mask))
             finally:
@@ -487,9 +499,15 @@ def process_video(
         track, meta = load_planar_track(path)
         projections = track.projected_lines
 
-        validate_cache(meta, "projections")
+        validate_cache(meta, "projections", require_coverage=False)
         if len(projections) < video_meta["total"]:
-            raise ValueError("cached projections do not cover the requested video frames")
+            valid = np.flatnonzero(np.isfinite(projections).all(axis=(1, 2, 3)))
+            if not len(valid):
+                raise ValueError("cached projections end early and contain no valid projection to hold; regenerate with planar-track")
+            missing = video_meta["total"] - len(projections)
+            last_valid = int(valid[-1])
+            print(f"Warning: projection cache covers {len(projections)}/{video_meta['total']} frames; holding the last valid projection (frame index {last_valid}) for the remaining {missing} frames", file=sys.stderr)
+            projections = np.concatenate((projections, np.repeat(projections[last_valid:last_valid + 1], missing, axis=0)))
         meta = {**meta, "fps": video_meta["fps"], "total": video_meta["total"]}
         projections = projections[:meta["total"]]
     else:
@@ -526,6 +544,7 @@ def process_video(
         strings,
         meta,
         masks=masks_data,
+        mask_frames=mask_frames,
         projections=projections,
         truncate_audio=frames is not None,
     )
