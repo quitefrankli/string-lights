@@ -6,15 +6,15 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-from flask import Flask, jsonify, request, send_from_directory, render_template
+from flask import Flask, g, jsonify, request, send_from_directory, render_template
 
-VIDEO_EXTS = [".mp4", ".avi", ".mov", ".mkv", ".flv", ".m4v"]
-INPUT_DIR = Path("data/input")
+from . import paths
+from .paths import artifact_path, project_dir, resolve_video, list_projects
 
 
 def _browser_video(source: Path) -> Path:
     source_key = hashlib.sha256(str(source.resolve()).encode()).hexdigest()[:16]
-    preview = Path("data/components/editor-previews") / f"{source.stem}-{source_key}.mp4"
+    preview = project_dir(source) / "tmp" / f"preview-{source_key}.mp4"
     if preview.exists() and preview.stat().st_mtime_ns >= source.stat().st_mtime_ns:
         return preview
     probe = subprocess.run([
@@ -43,37 +43,48 @@ def _browser_video(source: Path) -> Path:
 
 
 def _resolve_input(stem: str) -> Path | None:
-    for ext in VIDEO_EXTS:
-        p = INPUT_DIR / (stem + ext)
-        if p.exists():
-            return p
-    return None
+    try:
+        return resolve_video(stem)
+    except FileNotFoundError:
+        return None
 
 
 def _list_inputs() -> list[dict]:
-    from .pipeline import poses_path, masks_path
+    from .pipeline import masks_path
     from .planar_io import projection_path
 
-    seen: dict[str, Path] = {}
-    for ext in VIDEO_EXTS:
-        for p in INPUT_DIR.glob(f"*{ext}"):
-            # skip output-suffixed files like clip0.output.mp4
-            if any(part for part in p.stem.split(".")[1:]):
-                continue
-            seen.setdefault(p.stem, p)
+    seen = list_projects()
     items = []
     for stem in sorted(seen):
         items.append({
             "stem": stem,
-            "has_poses": poses_path(stem).exists(),
             "has_projections": projection_path(stem).exists(),
             "has_masks": masks_path(stem).exists(),
         })
     return items
 
 
-def create_app() -> Flask:
+def create_app(project: str | None = None) -> Flask:
     app = Flask(__name__)
+    directory = None
+    if project is not None:
+        directory = (paths.PROJECTS_DIR / project).resolve()
+        resolve_video(directory)
+
+    @app.before_request
+    def select_project():
+        if project is None:
+            return
+        stem = (request.view_args or {}).get("stem")
+        if stem is not None and stem != project:
+            return "Not found", 404
+        g.project_token = paths.project_override.set(directory)
+
+    @app.teardown_request
+    def release_project(error):
+        token = g.pop("project_token", None)
+        if token is not None:
+            paths.project_override.reset(token)
 
     @app.route("/")
     def index():
@@ -81,9 +92,18 @@ def create_app() -> Flask:
 
     @app.route("/list")
     def list_videos():
+        if project is not None:
+            from .pipeline import masks_path
+            from .planar_io import projection_path
+            return jsonify({
+                "items": [{"stem": project,
+                           "has_projections": projection_path(project).exists(),
+                           "has_masks": masks_path(project).exists()}],
+                "transcriptions": [project] if artifact_path(project, "transcription").is_file() else [],
+            })
         return jsonify({
             "items": _list_inputs(),
-            "transcriptions": sorted(p.stem for p in INPUT_DIR.glob("*.npy") if p.is_file()),
+            "transcriptions": sorted(p.parent.name for p in paths.PROJECTS_DIR.glob("*/transcription.npy")),
         })
 
     @app.route("/video/<stem>")
@@ -101,18 +121,20 @@ def create_app() -> Flask:
         if (not isinstance(filename, str) or not filename or filename in (".", "..")
                 or "/" in filename or "\\" in filename or "\0" in filename):
             return jsonify({"error": "Invalid transcription name."}), 400
+        if project is not None and filename != project:
+            return jsonify({"error": "Choose the active project."}), 400
         try:
             arr = np.array(data["frames"], dtype=np.int64)
             if arr.ndim != 2 or arr.shape[1] != 6:
                 raise ValueError
         except (KeyError, ValueError, TypeError, OverflowError):
             return jsonify({"error": "Expected an array with six string values per frame."}), 400
-        path = INPUT_DIR / f"{filename}.npy"
+        path = artifact_path(filename, "transcription")
         buf = io.BytesIO()
         np.save(buf, arr)
-        INPUT_DIR.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         if data.get("overwrite") is True:
-            with tempfile.TemporaryDirectory(dir=INPUT_DIR) as temporary:
+            with tempfile.TemporaryDirectory(dir=path.parent) as temporary:
                 output = Path(temporary) / "transcription.npy"
                 output.write_bytes(buf.getvalue())
                 output.replace(path)
@@ -126,7 +148,7 @@ def create_app() -> Flask:
 
     @app.route("/load/<stem>")
     def load_npy(stem):
-        p = INPUT_DIR / (stem + ".npy")
+        p = artifact_path(stem, "transcription")
         if not p.exists():
             return "Not found", 404
         try:
@@ -141,9 +163,6 @@ def create_app() -> Flask:
 
     @app.route("/strings/<stem>")
     def string_projections(stem):
-        from .pipeline import load_poses, poses_path
-        from .board import camera_matrix
-        from .strings import _project_string
         from .config import NUM_STRINGS
         from .planar import load_planar_track
         from .planar_io import projection_path
@@ -157,31 +176,7 @@ def create_app() -> Flask:
             ]
             return jsonify({**meta, "lines": lines})
 
-        if not poses_path(stem).exists():
-            return (f"No cached poses or planar projections for '{stem}'. "
-                    f"Run: uv run string-lights poses {stem} or "
-                    f"uv run string-lights planar-track {stem}", 400)
-
-        poses, meta = load_poses(stem)
-        K = camera_matrix(meta["w"], meta["h"])
-
-        lines_per_frame: list[list[list[int]] | None] = []
-        for rvec, tvec in poses:
-            if rvec is None:
-                lines_per_frame.append(None)
-                continue
-            lines = []
-            for i in range(NUM_STRINGS):
-                a, b = _project_string(i, rvec, tvec, K)
-                lines.append([int(a[0]), int(a[1]), int(b[0]), int(b[1])])
-            lines_per_frame.append(lines)
-
-        return jsonify({
-            "fps": meta["fps"],
-            "total": meta["total"],
-            "w": meta["w"],
-            "h": meta["h"],
-            "lines": lines_per_frame,
-        })
+        return (f"No cached planar projections for '{stem}'. "
+                f"Run: uv run string-lights generate-poses {stem}", 400)
 
     return app

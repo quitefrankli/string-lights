@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 from click.testing import CliRunner
 
 from string_lights.__main__ import main
@@ -36,10 +37,10 @@ def _report(**overrides) -> ValidationReport:
     return ValidationReport(**values)
 
 
-def test_run_forwards_planar_tracker(tmp_path, monkeypatch) -> None:
-    input_dir = tmp_path / "data/input"
+def test_run_uses_planar_without_tracker_selection(tmp_path, monkeypatch) -> None:
+    input_dir = tmp_path / "data/projects/clip"
     input_dir.mkdir(parents=True)
-    _artifact(input_dir / "clip.mp4")
+    _artifact(input_dir / "source.mp4")
     monkeypatch.chdir(tmp_path)
     received = {}
 
@@ -47,10 +48,10 @@ def test_run_forwards_planar_tracker(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(cli, "process_video", lambda *args, **kwargs: received.update(kwargs))
 
-    result = CliRunner().invoke(main, ["run", "clip", "--pose-tracker", "planar"])
+    result = CliRunner().invoke(main, ["render-strings", "clip"])
 
     assert result.exit_code == 0, result.output
-    assert received["pose_tracker"] == "planar"
+    assert "pose_tracker" not in received
 
 
 def test_run_rejects_removed_cache_flags_before_processing(monkeypatch) -> None:
@@ -61,7 +62,7 @@ def test_run_rejects_removed_cache_flags_before_processing(monkeypatch) -> None:
         "process_video",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not process")),
     )
-    conflicts = (["run", "missing", flag] for flag in (
+    conflicts = (["render-strings", "missing", flag] for flag in (
         "--use-cached-poses", "--use-cached-projections", "--use-cached-masks"
     ))
 
@@ -73,60 +74,29 @@ def test_run_rejects_removed_cache_flags_before_processing(monkeypatch) -> None:
         assert "Input file not found" not in result.output
 
 
-def test_tune_requires_an_explicit_tracking_mode() -> None:
-    result = CliRunner().invoke(main, ["tune", "clip"])
-
-    assert result.exit_code != 0
-    assert "exactly one of --aruco or --no-aruco is required" in result.output
-
-
-def test_tune_rejects_both_tracking_modes() -> None:
-    result = CliRunner().invoke(main, ["tune", "clip", "--aruco", "--no-aruco"])
-
-    assert result.exit_code != 0
-    assert "exactly one of --aruco or --no-aruco is required" in result.output
-
-
-def test_tune_dispatches_aruco_mode(tmp_path, monkeypatch) -> None:
-    input_dir = tmp_path / "data/input"
-    input_dir.mkdir(parents=True)
-    video = _artifact(input_dir / "clip.mp4")
-    received = []
-
-    import string_lights.tuner as tuner
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(tuner, "run_tuner", lambda path: received.append(path))
-
-    result = CliRunner().invoke(main, ["tune", "clip", "--aruco"])
-
-    assert result.exit_code == 0, result.output
-    assert received == ["data/input/clip.mp4"]
-
-
 def test_tune_dispatches_markerless_mode(tmp_path, monkeypatch) -> None:
-    input_dir = tmp_path / "data/input"
-    profile_dir = tmp_path / "data/components/profiles"
+    input_dir = tmp_path / "data/projects/clip"
+    profile_dir = input_dir
     input_dir.mkdir(parents=True)
-    profile_dir.mkdir(parents=True)
-    video = _artifact(input_dir / "clip.mp4")
-    annotation = _artifact(profile_dir / "clip.json")
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    video = _artifact(input_dir / "source.mp4")
+    annotation = _artifact(profile_dir / "profile.json")
     received = []
 
-    import string_lights.tuner as tuner
+    import string_lights.planar_tuner as tuner
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         tuner,
-        "run_planar_tuner",
+        "run_browser_tuner",
         lambda path, annotation_path: received.append((path, annotation_path)),
     )
 
-    result = CliRunner().invoke(main, ["tune", "clip", "--no-aruco"])
+    result = CliRunner().invoke(main, ["tune-guitar-plane", "clip"])
 
     assert result.exit_code == 0, result.output
     assert received == [
-        ("data/input/clip.mp4", Path("data/components/profiles/clip.json"))
+        ("data/projects/clip/source.mp4", Path("data/projects/clip/profile.json"))
     ]
 
 
@@ -170,7 +140,7 @@ def test_planar_track_does_not_save_an_entirely_unresolved_track(
     result = CliRunner().invoke(
         main,
         [
-            "planar-track",
+            "generate-poses",
             str(video),
             "--profile",
             str(profile),
@@ -229,7 +199,7 @@ def test_planar_track_passes_repeated_profiles_to_tracker_in_order(
     result = CliRunner().invoke(
         main,
         [
-            "planar-track",
+            "generate-poses",
             str(video),
             "--profile",
             str(first_source),
@@ -279,7 +249,7 @@ def test_planar_track_forwards_frame_limit(tmp_path, monkeypatch) -> None:
     result = CliRunner().invoke(
         main,
         [
-            "planar-track",
+            "generate-poses",
             str(video),
             "--profile",
             str(profile),
@@ -299,7 +269,7 @@ def test_planar_track_keeps_default_and_single_profile_inputs_scalar(
     tmp_path, monkeypatch
 ) -> None:
     video = _artifact(tmp_path / "clip.mp4")
-    default_source = tmp_path / "data/components/profiles/clip.npz"
+    default_source = tmp_path / "data/projects/clip/profile.npz"
     default_source.parent.mkdir(parents=True)
     _artifact(default_source)
     explicit_source = _artifact(tmp_path / "explicit.npz")
@@ -338,12 +308,12 @@ def test_planar_track_keeps_default_and_single_profile_inputs_scalar(
 
     default_result = CliRunner().invoke(
         main,
-        ["planar-track", str(video), "--output", str(tmp_path / "default.npz")],
+        ["generate-poses", str(video), "--output", str(tmp_path / "default.npz")],
     )
     explicit_result = CliRunner().invoke(
         main,
         [
-            "planar-track",
+            "generate-poses",
             str(video),
             "--profile",
             str(explicit_source),
@@ -381,7 +351,7 @@ def test_planar_track_reports_a_missing_repeated_profile_before_loading(
     result = CliRunner().invoke(
         main,
         [
-            "planar-track",
+            "generate-poses",
             str(video),
             "--profile",
             str(existing),
@@ -398,7 +368,7 @@ def test_planar_track_rejects_duplicate_profile_aliases_before_loading(
     tmp_path, monkeypatch
 ) -> None:
     video = _artifact(tmp_path / "clip.mp4")
-    profile = tmp_path / "data/components/profiles/shared.npz"
+    profile = tmp_path / "data/projects/clip/shared.npz"
     profile.parent.mkdir(parents=True)
     _artifact(profile)
     loaded = []
@@ -422,12 +392,12 @@ def test_planar_track_rejects_duplicate_profile_aliases_before_loading(
     result = CliRunner().invoke(
         main,
         [
-            "planar-track",
+            "generate-poses",
             str(video),
             "--profile",
             "shared",
             "--profile",
-            "data/components/profiles/shared.npz",
+            "data/projects/clip/shared.npz",
         ],
     )
 
@@ -441,18 +411,15 @@ def test_planar_validate_passes_and_enforces_accuracy_gates(
     tmp_path, monkeypatch
 ) -> None:
     projections = _artifact(tmp_path / "track.npz")
-    poses = _artifact(tmp_path / "poses.npz")
+    reference = _artifact(tmp_path / "reference.npz")
     metadata = {"w": 1920, "h": 1080, "fps": 30.0, "total": 100}
 
     import string_lights.planar as planar
     import string_lights.planar_io as planar_io
 
-    monkeypatch.setattr(planar, "load_planar_track", lambda _: (object(), metadata))
-    monkeypatch.setattr(
-        planar_io,
-        "projected_strings_from_pose_cache",
-        lambda _: (np.zeros((100, 6, 2, 2)), metadata),
-    )
+    from types import SimpleNamespace
+    reference_track = SimpleNamespace(projected_lines=np.zeros((100, 6, 2, 2)))
+    monkeypatch.setattr(planar, "load_planar_track", lambda _: (reference_track, metadata))
     monkeypatch.setattr(planar, "validate_projection", lambda *_: _report())
 
     arguments = [
@@ -460,8 +427,8 @@ def test_planar_validate_passes_and_enforces_accuracy_gates(
         "clip",
         "--projections",
         str(projections),
-        "--poses",
-        str(poses),
+        "--reference",
+        str(reference),
     ]
     passed = CliRunner().invoke(main, arguments)
 
@@ -481,23 +448,15 @@ def test_planar_validate_passes_and_enforces_accuracy_gates(
 
 def test_planar_validate_rejects_misaligned_artifacts(tmp_path, monkeypatch) -> None:
     projections = _artifact(tmp_path / "track.npz")
-    poses = _artifact(tmp_path / "poses.npz")
+    reference = _artifact(tmp_path / "reference.npz")
 
     import string_lights.planar as planar
     import string_lights.planar_io as planar_io
 
     monkeypatch.setattr(
-        planar,
-        "load_planar_track",
-        lambda _: (object(), {"w": 1920, "h": 1080, "fps": 30.0, "total": 100}),
-    )
-    monkeypatch.setattr(
-        planar_io,
-        "projected_strings_from_pose_cache",
-        lambda _: (
-            np.zeros((99, 6, 2, 2)),
-            {"w": 1920, "h": 1080, "fps": 30.0, "total": 99},
-        ),
+        planar, "load_planar_track",
+        lambda path: (object(), {"w": 1920, "h": 1080, "fps": 30.0,
+                                 "total": 100 if path == projections else 99}),
     )
 
     result = CliRunner().invoke(
@@ -507,10 +466,55 @@ def test_planar_validate_rejects_misaligned_artifacts(tmp_path, monkeypatch) -> 
             "clip",
             "--projections",
             str(projections),
-            "--poses",
-            str(poses),
+            "--reference",
+            str(reference),
         ],
     )
 
     assert result.exit_code != 0
     assert "metadata differ" in result.output
+
+
+def test_pose_command_is_removed():
+    result = CliRunner().invoke(main, ['poses', 'clip'])
+    assert result.exit_code != 0
+    assert "No such command 'poses'" in result.output
+
+
+@pytest.mark.parametrize('arguments', [
+    ['render-strings', 'clip', '--pose-tracker', 'aruco'],
+    ['render-strings', 'clip', '--poses', 'old.npz'],
+    ['tune-guitar-plane', 'clip', '--aruco'],
+    ['tune-guitar-plane', 'clip', '--no-aruco'],
+])
+def test_removed_tracking_options_are_rejected(arguments):
+    result = CliRunner().invoke(main, arguments)
+    assert result.exit_code != 0
+    assert 'No such option' in result.output
+
+
+def test_tabs_editor_requires_project():
+    result = CliRunner().invoke(main, ['tabs-editor'])
+    assert result.exit_code != 0
+    assert "Missing argument 'PROJECT'" in result.output
+
+
+def test_tabs_editor_launches_selected_project(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import string_lights.editor as editor
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    monkeypatch.setattr(editor, 'create_app', lambda project: (
+        calls.append(project) or SimpleNamespace(run=lambda **kw: calls.append(kw))))
+    monkeypatch.setattr('webbrowser.open', lambda url: None)
+    result = CliRunner().invoke(main, ['tabs-editor', 'cupid', '--port', '9000'])
+    assert result.exit_code == 0, result.output
+    assert calls[0] == 'cupid'
+    assert calls[1]['port'] == 9000
+
+
+def test_tabs_editor_rejects_missing_source(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ['tabs-editor', 'missing'])
+    assert result.exit_code != 0
+    assert 'Input file not found' in result.output

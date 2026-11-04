@@ -60,7 +60,7 @@ def create_tuner_app(video_path: str | Path, annotation_path: str | Path) -> Fla
             target = annotation_path.with_suffix(".npz")
             save_planar_profile(target, profile)
             annotation_path.write_text(json.dumps(data, indent=2, allow_nan=False) + "\n")
-            return jsonify(message="Annotation and planar profile saved. Re-run planar-track to update cached projections.")
+            return jsonify(message="Annotation and planar profile saved. Re-run generate-poses to update cached projections.")
         except (KeyError, OSError, TypeError, ValueError) as error:
             return jsonify(error=str(error)), 400
         finally:

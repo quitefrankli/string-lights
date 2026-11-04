@@ -1,11 +1,13 @@
 import click
 import math
+from functools import wraps
+
 from pathlib import Path
+
+from . import paths
 
 from .pipeline import process_video
 
-
-VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".flv", ".m4v")
 
 PLANAR_MIN_COVERAGE = 0.95
 PLANAR_MAX_MEDIAN_ERROR_PX = 3.0
@@ -15,13 +17,42 @@ PLANAR_MAX_P95_NUT_ERROR_PX = 10.5
 
 
 def _resolve_video(filename: str) -> Path:
-    supplied = Path(filename)
-    base = supplied if supplied.is_absolute() or len(supplied.parts) > 1 else Path("data/input") / supplied
-    candidates = [base] if base.suffix else [base.with_suffix(ext) for ext in VIDEO_EXTENSIONS]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    raise click.ClickException(f"Input file not found: {base}")
+    try:
+        return paths.resolve_video(filename)
+    except FileNotFoundError as error:
+        raise click.ClickException(str(error)) from error
+
+
+def path_options(**artifacts):
+    """Scope path choices to one command, including downstream cache helpers."""
+    def decorate(function):
+        @wraps(function)
+        def invoke(*args, project_dir=None, **kwargs):
+            overrides = {kind: kwargs.pop(option) for option, kind in artifacts.items()}
+            overrides = {kind: value for kind, value in overrides.items() if value is not None}
+            filename = kwargs.get("filename")
+            directory = project_dir
+            if directory is None and filename:
+                try:
+                    directory = paths.project_dir(paths.resolve_video(filename))
+                except FileNotFoundError:
+                    directory = paths.project_dir(filename)
+            project_token = paths.project_override.set(directory)
+            artifacts_token = paths.artifact_overrides.set(overrides)
+            try:
+                return function(*args, **kwargs)
+            finally:
+                paths.artifact_overrides.reset(artifacts_token)
+                paths.project_override.reset(project_token)
+        for option, kind in artifacts.items():
+            invoke = click.option(
+                "--" + option.replace("_", "-"),
+                type=click.Path(dir_okay=False, path_type=Path),
+                help=f"Override the {kind.replace('_', ' ')} file path.",
+            )(invoke)
+        return click.option("--project-dir", type=click.Path(file_okay=False, path_type=Path),
+                            help="Override the project directory for default artifacts.")(invoke)
+    return decorate
 
 
 def _require_new_artifact(path: Path, force: bool) -> None:
@@ -37,19 +68,19 @@ def _resolve_profile_artifact(value: str | None, stem: str) -> Path:
     if value is None:
         return profile_path(stem)
     supplied = Path(value)
-    if supplied.is_absolute() or len(supplied.parts) > 1:
+    if supplied.suffix == ".npz" or supplied.is_absolute() or len(supplied.parts) > 1:
         return supplied
-    return profile_path(supplied.stem if supplied.suffix == ".npz" else value)
+    return paths.project_dir(stem) / (supplied.name if supplied.suffix else f"{value}.npz")
 
 
 def _incompatible_planar_metadata(
     track_meta: dict[str, int | float],
-    pose_meta: dict[str, int | float],
+    reference_meta: dict[str, int | float],
 ) -> str | None:
     mismatches = [
-        f"{field} ({track_meta[field]} != {pose_meta[field]})"
+        f"{field} ({track_meta[field]} != {reference_meta[field]})"
         for field in ("w", "h", "total")
-        if int(track_meta[field]) != int(pose_meta[field])
+        if int(track_meta[field]) != int(reference_meta[field])
     ]
     return ", ".join(mismatches) or None
 
@@ -59,23 +90,27 @@ def _fails_maximum(value: float, maximum: float) -> bool:
 
 
 @click.group()
-def main() -> None:
-    pass
+@click.option("--projects-dir", type=click.Path(file_okay=False, path_type=Path), default=Path("data/projects"), show_default=True)
+@click.pass_context
+def main(ctx, projects_dir: Path) -> None:
+    previous = paths.PROJECTS_DIR
+    paths.PROJECTS_DIR = projects_dir
+    ctx.call_on_close(lambda: setattr(paths, "PROJECTS_DIR", previous))
 
 
-@main.command()
+@main.command("render-strings")
 @click.argument("filename")
 @click.option("--frames", type=int, default=None, help="Max number of frames to process.")
 @click.option("--disable-masking", is_flag=True, default=False, help="Skip hand masking (faster for dev testing).")
 @click.option("--random-strings", is_flag=True, default=False, help="Generate random string highlights instead of reading from .npy.")
 @click.option("--debug-masks", is_flag=True, default=False, help="Write debug video with soft hand-mask overlay; skips normal output.")
-@click.option("--pose-tracker", type=click.Choice(["aruco", "planar"]), default="aruco", show_default=True, help="Select the cached tracking data to render.")
-def run(filename: str, frames: int | None, disable_masking: bool, random_strings: bool, debug_masks: bool,
-        pose_tracker: str) -> None:
+@path_options(output="render", projections="projections", masks="masks", mask_metadata="mask_metadata", transcription="transcription")
+def run(filename: str, frames: int | None, disable_masking: bool, random_strings: bool, debug_masks: bool) -> None:
     input_path = _resolve_video(filename)
 
-    stem = input_path.stem
-    output_path = Path("data/output") / f"{stem}.mp4"
+    output_path = paths.artifact_path(input_path, "render")
+    if debug_masks and "render" not in paths.artifact_overrides.get():
+        output_path = paths.project_dir(input_path) / "tmp/masks-debug.mp4"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         process_video(
@@ -84,33 +119,19 @@ def run(filename: str, frames: int | None, disable_masking: bool, random_strings
             disable_masking=disable_masking,
             random_strings=random_strings,
             debug_masks=debug_masks,
-            pose_tracker=pose_tracker,
         )
     except (FileNotFoundError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 
 
-@main.command("poses")
-@click.argument("filename")
-@click.option("--frames", type=click.IntRange(min=1), help="Max number of frames to process.")
-@click.option("--force", is_flag=True, help="Overwrite an existing pose cache.")
-def poses(filename: str, frames: int | None, force: bool) -> None:
-    """Compute and cache ArUco board poses without rendering."""
-    from .pipeline import compute_poses, poses_path, save_poses
-
-    video = _resolve_video(filename)
-    _require_new_artifact(poses_path(video.stem), force)
-    values, metadata = compute_poses(str(video), frames=frames)
-    save_poses(video.stem, values, metadata)
-
-
-@main.command("masks")
+@main.command("generate-masks")
 @click.argument("filename")
 @click.option("--frames", type=click.IntRange(min=1), help="Max number of frames to process.")
 @click.option("--frame-skip", type=click.IntRange(min=1), default=1, show_default=True, help="Cache a mask every N frames; SAM2Matting still tracks every frame.")
 @click.option("--force", is_flag=True, help="Overwrite an existing mask cache.")
-@click.option("--seed-mask", type=click.Path(exists=True, dir_okay=False, path_type=Path), help="First-frame hand mask PNG; defaults to data/components/mask_seeds/VIDEO.png.")
+@click.option("--seed-mask", type=click.Path(exists=True, dir_okay=False, path_type=Path), help="First-frame hand mask PNG; defaults to PROJECT/masks/seed.png.")
 @click.option("--stabilize/--no-stabilize", default=True, show_default=True, help="Reduce flicker with a motion-aligned three-frame median.")
+@path_options(output="masks", metadata_output="mask_metadata")
 def masks(filename: str, frames: int | None, frame_skip: int, force: bool, seed_mask: Path | None, stabilize: bool) -> None:
     """Track hands with SAM2Matting and cache masks without rendering."""
     from .pipeline import compute_masks, masks_meta_path, masks_path, save_masks
@@ -125,14 +146,20 @@ def masks(filename: str, frames: int | None, frame_skip: int, force: bool, seed_
         raise click.ClickException(str(error)) from error
 
 
-@main.command()
+@main.command("tabs-editor")
+@click.argument("project")
 @click.option("--port", type=int, default=8080, show_default=True)
-def editor(port: int) -> None:
+def tabs_editor(project: str, port: int) -> None:
     import webbrowser
     from .editor import create_app
 
     import os
-    app = create_app()
+    if project in (".", "..") or Path(project).name != project or "\\" in project:
+        raise click.BadParameter("Expected a project name.", param_hint="project")
+    try:
+        app = create_app(project)
+    except FileNotFoundError as error:
+        raise click.ClickException(str(error)) from error
     if not os.environ.get("WERKZEUG_RUN_MAIN"):
         webbrowser.open(f"http://localhost:{port}")
     app.run(host="localhost", port=port, debug=True)
@@ -148,54 +175,32 @@ def lyrics_editor(port: int) -> None:
     create_lyrics_app().run(host="localhost", port=port)
 
 
-@main.command()
+@main.command("tune-guitar-plane")
 @click.argument("filename")
-@click.option("--aruco", is_flag=True, help="Tune board-based ArUco coordinates.")
-@click.option("--no-aruco", is_flag=True, help="Tune markerless planar string lines.")
-def tune(filename: str, aruco: bool, no_aruco: bool) -> None:
-    from .tuner import run_planar_tuner, run_tuner
+@path_options(annotation="annotation")
+def tune(filename: str) -> None:
+    from .planar_tuner import run_browser_tuner
 
-    if aruco == no_aruco:
-        raise click.UsageError("exactly one of --aruco or --no-aruco is required")
-
-    input_dir = Path("data/input")
-    if Path(filename).suffix:
-        input_path = input_dir / filename
-    else:
-        for ext in [".mp4", ".avi", ".mov", ".mkv", ".flv", ".m4v"]:
-            candidate = input_dir / (filename + ext)
-            if candidate.exists():
-                input_path = candidate
-                break
-        else:
-            input_path = input_dir / filename
-
-    if not input_path.exists():
-        raise click.ClickException(f"Input file not found: {input_path}")
-
-    if aruco:
-        run_tuner(str(input_path))
-        return
-
-    annotation = Path("data/components/profiles") / f"{input_path.stem}.json"
+    input_path = _resolve_video(filename)
+    annotation = paths.artifact_path(input_path, "annotation")
     if not annotation.is_file():
         raise click.ClickException(
             f"Planar annotation not found: {annotation}. "
-            "Create an annotation before using --no-aruco."
+            "Create a profile.json annotation before tuning."
         )
     try:
-        run_planar_tuner(str(input_path), annotation)
+        run_browser_tuner(str(input_path), annotation)
     except (KeyError, OSError, TypeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 
 
 @main.command("mask-edit")
 @click.argument("filename")
+@path_options(masks="masks", mask_metadata="mask_metadata", output="mask_output")
 def mask_edit(filename: str) -> None:
     from .mask_editor import run_mask_editor
 
-    stem = Path(filename).stem if Path(filename).suffix else filename
-    run_mask_editor(stem)
+    run_mask_editor(str(_resolve_video(filename)))
 
 
 @main.command("planar-profile")
@@ -204,9 +209,10 @@ def mask_edit(filename: str) -> None:
     "annotation",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
-@click.option("--name", help="Profile name under data/components/profiles/.")
+@click.option("--name", help="Alternate profile filename within the project.")
 @click.option("--output", type=click.Path(dir_okay=False, path_type=Path), help="Override the profile artifact path.")
 @click.option("--force", is_flag=True, help="Overwrite an existing profile artifact.")
+@path_options()
 def planar_profile(
     filename: str,
     annotation: Path,
@@ -219,7 +225,7 @@ def planar_profile(
     from .planar_io import create_planar_profile_from_annotation, profile_path
 
     video_path = _resolve_video(filename)
-    target = output or profile_path(name or video_path.stem)
+    target = output or (paths.project_dir(video_path) / f"{name}.npz" if name else profile_path(str(video_path)))
     _require_new_artifact(target, force)
     try:
         profile = create_planar_profile_from_annotation(video_path, annotation)
@@ -229,17 +235,18 @@ def planar_profile(
     click.echo(f"Planar profile saved -> {target}")
 
 
-@main.command("planar-track")
+@main.command("generate-poses")
 @click.argument("filename")
 @click.option("--frames", type=click.IntRange(min=1), help="Max number of frames to track.")
 @click.option(
     "--profile",
     "profile_values",
     multiple=True,
-    help="Profile name or explicit .npz path. Repeat for multiple views; defaults to the video stem.",
+    help="Profile name or explicit .npz path. Repeat for multiple views; defaults to PROJECT/profile.npz.",
 )
 @click.option("--output", type=click.Path(dir_okay=False, path_type=Path), help="Override the projection artifact path.")
 @click.option("--force", is_flag=True, help="Overwrite an existing projection artifact.")
+@path_options()
 def planar_track(
     filename: str,
     frames: int | None,
@@ -253,7 +260,7 @@ def planar_track(
 
     video_path = _resolve_video(filename)
     sources = tuple(
-        _resolve_profile_artifact(value, video_path.stem)
+        _resolve_profile_artifact(value, str(video_path))
         for value in (profile_values or (None,))
     )
     resolved_sources = tuple(source.resolve() for source in sources)
@@ -270,7 +277,7 @@ def planar_track(
     missing = next((source for source in sources if not source.is_file()), None)
     if missing is not None:
         raise click.ClickException(f"Planar profile not found: {missing}")
-    target = output or projection_path(video_path.stem)
+    target = output or projection_path(str(video_path))
     _require_new_artifact(target, force)
 
     try:
@@ -303,7 +310,7 @@ def planar_track(
 @main.command("planar-validate")
 @click.argument("filename")
 @click.option("--projections", type=click.Path(dir_okay=False, path_type=Path), help="Override the planar projection artifact.")
-@click.option("--poses", type=click.Path(dir_okay=False, path_type=Path), help="Override the board-pose oracle artifact.")
+@click.option("--reference", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Reference planar projection artifact to compare against.")
 @click.option(
     "--min-coverage",
     type=click.FloatRange(min=0.0, max=1.0),
@@ -314,36 +321,34 @@ def planar_track(
 @click.option("--max-p95-error", type=click.FloatRange(min=0.0), default=PLANAR_MAX_P95_ERROR_PX, show_default=True)
 @click.option("--max-p95-bridge-error", type=click.FloatRange(min=0.0), default=PLANAR_MAX_P95_BRIDGE_ERROR_PX, show_default=True)
 @click.option("--max-p95-nut-error", type=click.FloatRange(min=0.0), default=PLANAR_MAX_P95_NUT_ERROR_PX, show_default=True)
+@path_options()
 def planar_validate(
     filename: str,
     projections: Path | None,
-    poses: Path | None,
+    reference: Path,
     min_coverage: float,
     max_median_error: float,
     max_p95_error: float,
     max_p95_bridge_error: float,
     max_p95_nut_error: float,
 ) -> None:
-    """Validate cached planar projections against cached board poses."""
-    from .pipeline import poses_path
+    """Validate cached planar projections against reference planar projections."""
     from .planar import load_planar_track, validate_projection
-    from .planar_io import projected_strings_from_pose_cache, projection_path
+    from .planar_io import projection_path
 
     stem = Path(filename).stem
     projection_source = projections or projection_path(stem)
-    pose_source = poses or poses_path(stem)
+    reference_source = reference
     if not projection_source.is_file():
         raise click.ClickException(f"Planar projections not found: {projection_source}")
-    if not pose_source.is_file():
-        raise click.ClickException(f"Board poses not found: {pose_source}")
 
     try:
         track, track_meta = load_planar_track(projection_source)
-        expected, pose_meta = projected_strings_from_pose_cache(pose_source)
-        mismatch = _incompatible_planar_metadata(track_meta, pose_meta)
+        reference_track, reference_meta = load_planar_track(reference_source)
+        mismatch = _incompatible_planar_metadata(track_meta, reference_meta)
         if mismatch:
-            raise ValueError(f"projection and pose metadata differ: {mismatch}")
-        report = validate_projection(track, expected)
+            raise ValueError(f"projection and reference metadata differ: {mismatch}")
+        report = validate_projection(track, reference_track.projected_lines)
     except (KeyError, OSError, TypeError, ValueError) as error:
         raise click.ClickException(str(error)) from error
 

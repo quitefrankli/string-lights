@@ -10,32 +10,30 @@ from typing import Generator, Iterator
 
 from tqdm import tqdm
 
-from .board import build_board, make_detector, camera_matrix, SQUARE_SIZE
-from .config import POSE_RESOLUTION, PoseResolution, MASK_MODEL_ID, MASK_CHECKPOINT, MASK_ENCODING, SMOOTH_POSES, T_MIN_CUTOFF, T_BETA, R_MIN_CUTOFF, R_BETA, MAX_TRANSLATION_JUMP, MAX_ROTATION_JUMP
+from .config import MASK_MODEL_ID, MASK_CHECKPOINT, MASK_ENCODING
 from .masking import video_masks, read_seed, seed_mask_path, blend_mask, mask_overlay
 from .mask_stabilization import stabilize_video_masks
-from .pose import estimate_pose, pose_jump, smooth_poses, Pose
 from .audio import get_strings_to_highlight, get_random_strings
-from .strings import draw_projected_strings_frame, draw_strings_frame
+from .strings import draw_projected_strings_frame
 
-
-COMPONENTS_DIR = Path("data/components")
-
-
-def poses_path(stem: str) -> Path:
-    return COMPONENTS_DIR / "poses" / f"{stem}.npz"
+from .paths import artifact_path, project_dir, artifact_overrides
 
 
 def masks_path(stem: str) -> Path:
-    return COMPONENTS_DIR / "masks" / f"{stem}.npz"
+    return artifact_path(stem, "masks")
 
 
 def _masks_tmp_path(stem: str) -> Path:
-    return COMPONENTS_DIR / "masks" / f"{stem}.npy"
+    if "masks" in artifact_overrides.get():
+        return masks_path(stem).with_suffix(".npy")
+    return project_dir(stem) / "tmp/masks.npy"
 
 
 def masks_meta_path(stem: str) -> Path:
-    return COMPONENTS_DIR / "masks" / f"{stem}.meta.npz"
+    overrides = artifact_overrides.get()
+    if "mask_metadata" not in overrides and "masks" in overrides:
+        return overrides["masks"].with_suffix(".meta.npz")
+    return artifact_path(stem, "mask_metadata")
 
 
 def masks_cached(stem: str) -> bool:
@@ -95,133 +93,6 @@ def _stream_frames(cap: cv2.VideoCapture, total: int) -> Generator[np.ndarray, N
         yield frame
 
 
-# ── Pose stage ─────────────────────────────────────────────────────────────
-
-def pass1_raw_poses(cap: cv2.VideoCapture, total: int, detector: cv2.aruco.ArucoDetector, id_to_3d: dict[int, np.ndarray], K: np.ndarray) -> list[Pose]:
-    raw = []
-    for i in range(total):
-        ret, frame = cap.read()
-        if not ret:
-            raw.append((None, None))
-            continue
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        raw.append(estimate_pose(gray, detector, id_to_3d, K))
-        if (i + 1) % 60 == 0:
-            found = sum(1 for r, _ in raw if r is not None)
-            print(f"  pass1 {i+1}/{total} raw detections: {found}")
-    return raw
-
-
-def pass2_resolve_poses(raw_poses: list[Pose], mode: PoseResolution = POSE_RESOLUTION) -> list[Pose]:
-    n = len(raw_poses)
-
-    # Frame-to-frame validation: accept the first valid PnP unconditionally,
-    # then chain — reject any frame whose translation/rotation jump from the
-    # last accepted pose exceeds (per-frame budget × frames since last accept).
-    accepted: list[Pose] = []
-    last: Pose = (None, None)
-    last_idx = -1
-    for idx, (rvec, tvec) in enumerate(raw_poses):
-        if rvec is None:
-            accepted.append((None, None))
-            continue
-        if last[0] is None:
-            accepted.append((rvec, tvec))
-            last = (rvec, tvec)
-            last_idx = idx
-            continue
-        gap = max(1, idx - last_idx)
-        dt, dr = pose_jump(last, (rvec, tvec))
-        if dt < MAX_TRANSLATION_JUMP * gap and dr < MAX_ROTATION_JUMP * gap:
-            accepted.append((rvec, tvec))
-            last = (rvec, tvec)
-            last_idx = idx
-        else:
-            accepted.append((None, None))
-
-    if mode == PoseResolution.OMIT:
-        return accepted
-
-    if mode == PoseResolution.HOLD:
-        resolved: list[Pose] = []
-        last: Pose = (None, None)
-        for pose in accepted:
-            if pose[0] is not None:
-                last = pose
-            resolved.append(last)
-        return resolved
-
-    # INTERPOLATE: fill gaps between valid frames
-    resolved = list(accepted)
-    i = 0
-    while i < n:
-        if resolved[i][0] is not None:
-            i += 1
-            continue
-        prev_idx = next((j for j in range(i - 1, -1, -1) if resolved[j][0] is not None), None)
-        next_idx = next((j for j in range(i, n) if resolved[j][0] is not None), None)
-        gap_end  = (next_idx - 1) if next_idx is not None else n - 1
-        if prev_idx is not None and next_idx is not None:
-            r0, t0 = resolved[prev_idx]
-            r1, t1 = resolved[next_idx]
-            span = next_idx - prev_idx
-            for k in range(i, gap_end + 1):
-                alpha = (k - prev_idx) / span
-                resolved[k] = (r0 + alpha * (r1 - r0), t0 + alpha * (t1 - t0))
-        i = gap_end + 1
-    return resolved
-
-
-def compute_poses(input_path: str, frames: int | None = None) -> tuple[list[Pose], dict]:
-    cap = cv2.VideoCapture(input_path)
-    meta = _video_meta(cap, frames, path=input_path)
-    K = camera_matrix(meta["w"], meta["h"])
-    adict, id_to_3d = build_board()
-    detector = make_detector(adict)
-    raw = pass1_raw_poses(cap, meta["total"], detector, id_to_3d, K)
-    resolved = pass2_resolve_poses(raw)
-    cap.release()
-    detected = sum(1 for r, _ in resolved if r is not None)
-    print(f"  pose pass complete: stable in {detected}/{meta['total']} frames")
-    return resolved, meta
-
-
-def save_poses(stem: str, poses: list[Pose], meta: dict) -> Path:
-    path = poses_path(stem)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    n = len(poses)
-    rvecs = np.full((n, 3), np.nan, dtype=np.float64)
-    tvecs = np.full((n, 3), np.nan, dtype=np.float64)
-    for i, (r, t) in enumerate(poses):
-        if r is not None:
-            rvecs[i] = np.asarray(r).flatten()
-            tvecs[i] = np.asarray(t).flatten()
-    np.savez_compressed(
-        path, rvecs=rvecs, tvecs=tvecs,
-        w=meta["w"], h=meta["h"], fps=meta["fps"], total=meta["total"],
-    )
-    print(f"  poses cached → {path}")
-    return path
-
-
-def load_poses(stem: str) -> tuple[list[Pose], dict]:
-    path = poses_path(stem)
-    data = np.load(path)
-    rvecs = data["rvecs"]
-    tvecs = data["tvecs"]
-    poses: list[Pose] = []
-    for r, t in zip(rvecs, tvecs):
-        if np.any(np.isnan(r)):
-            poses.append((None, None))
-        else:
-            poses.append((r.reshape(3, 1), t.reshape(3, 1)))
-    meta = {
-        "w": int(data["w"]), "h": int(data["h"]),
-        "fps": float(data["fps"]), "total": int(data["total"]),
-    }
-    return poses, meta
-
-
 # ── Mask stage ─────────────────────────────────────────────────────────────
 
 def compute_masks(
@@ -244,7 +115,7 @@ def compute_masks(
     total, h, w = meta["total"], meta["h"], meta["w"]
     if total < 1:
         raise ValueError("Input video has no frames")
-    seed_path = Path(seed_mask) if seed_mask else seed_mask_path(stem or Path(input_path).stem)
+    seed_path = Path(seed_mask) if seed_mask else seed_mask_path(stem or str(project_dir(input_path)))
     seed = read_seed(seed_path, h, w)
     meta.update(model=MASK_MODEL_ID, checkpoint=MASK_CHECKPOINT, encoding=MASK_ENCODING,
                 seed_mask=str(seed_path), frame_skip=frame_skip,
@@ -298,6 +169,7 @@ def save_masks(stem: str, masks: np.ndarray, indices: np.ndarray, meta: dict) ->
     npz_path = masks_path(stem)
     meta_path = masks_meta_path(stem)
     meta_path.parent.mkdir(parents=True, exist_ok=True)
+    npz_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(str(npz_path), masks=masks)
     np.savez_compressed(
         str(meta_path), indices=indices,
@@ -313,7 +185,7 @@ def save_masks(stem: str, masks: np.ndarray, indices: np.ndarray, meta: dict) ->
 def load_masks(stem: str) -> tuple[np.ndarray, np.ndarray, dict]:
     with np.load(masks_meta_path(stem)) as data:
         if "encoding" not in data or data["encoding"].item() != MASK_ENCODING:
-            raise ValueError(f"Old binary mask cache for {stem}; regenerate with string-lights masks {stem} --force")
+            raise ValueError(f"Old binary mask cache for {stem}; regenerate with string-lights generate-masks {stem} --force")
         meta = {key: data[key].item() for key in data.files if key != "indices"}
         indices = data["indices"].copy()
     with np.load(masks_path(stem)) as data:
@@ -342,22 +214,16 @@ def masks_iter(
 def render_video(
     input_path: str,
     output_path: str,
-    poses: list[Pose] | None,
+    projections: np.ndarray,
     strings: list[list[int]],
     meta: dict,
     masks: tuple[np.ndarray, np.ndarray] | None = None,
-    projections: np.ndarray | None = None,
     fast: bool = False,
     include_audio: bool = True,
-    draw_axes: bool = True,
     truncate_audio: bool = False,
     mask_frames: int | None = None,
 ) -> None:
     w, h, fps, total = meta["w"], meta["h"], meta["fps"], meta["total"]
-    K = camera_matrix(w, h)
-    dist = np.zeros(5, dtype=np.float64)
-    axis_len = SQUARE_SIZE * 3
-
     cap = cv2.VideoCapture(input_path)
     frame_stream = _stream_frames(cap, total)
     if masks is not None:
@@ -391,23 +257,16 @@ def render_video(
         target=lambda: stderr_chunks.append(proc.stderr.read()), daemon=True
     )
     stderr_thread.start()
-    geometry_count = len(projections) if projections is not None else len(poses or [])
-    render_count = min(total, geometry_count, len(strings))
+    render_count = min(total, len(projections), len(strings))
     pbar = tqdm(total=render_count, desc="render", unit="f")
     try:
         for i, (frame, mask) in enumerate(zip(frame_stream, mask_stream)):
             if i >= render_count:
                 break
             original = frame.copy() if mask.any() else None
-            if projections is not None:
-                draw_projected_strings_frame(
-                    frame, i, projections[i], strings[i], last_active, fps
-                )
-            else:
-                rvec, tvec = poses[i]
-                if draw_axes and rvec is not None:
-                    cv2.drawFrameAxes(frame, K, dist, rvec, tvec, axis_len)
-                draw_strings_frame(frame, i, rvec, tvec, strings[i], last_active, K, fps)
+            draw_projected_strings_frame(
+                frame, i, projections[i], strings[i], last_active, fps
+            )
             if original is not None:
                 frame = blend_mask(original, frame, mask)
             proc.stdin.write(np.ascontiguousarray(frame).tobytes())
@@ -434,38 +293,32 @@ def process_video(
     disable_masking: bool = False,
     random_strings: bool = False,
     debug_masks: bool = False,
-    pose_tracker: str = "aruco",
 ) -> None:
-    stem = Path(input_path).stem
-
-    if pose_tracker not in ("aruco", "planar"):
-        raise ValueError("pose_tracker must be aruco or planar")
+    stem = str(project_dir(input_path))
 
     cap = cv2.VideoCapture(input_path)
     video_meta = _video_meta(cap, frames, path=input_path)
     cap.release()
 
-    def validate_cache(cache_meta: dict, name: str, *, require_coverage: bool = True) -> None:
+    def validate_cache(cache_meta: dict, name: str) -> None:
         if (cache_meta["w"], cache_meta["h"]) != (video_meta["w"], video_meta["h"]):
             raise ValueError(f"cached {name} dimensions do not match the input video")
-        if require_coverage and cache_meta["total"] < video_meta["total"]:
-            raise ValueError(f"cached {name} do not cover the requested video frames; regenerate the cache with the required --frames limit")
 
     masks_data = None
     mask_frames = None
     if debug_masks or not disable_masking:
         if not masks_cached(stem):
-            raise FileNotFoundError(f"No cached masks at {masks_path(stem)}. Generate them with: uv run string-lights masks {input_path}")
+            raise FileNotFoundError(f"No cached masks at {masks_path(stem)}. Generate them with: uv run string-lights generate-masks {input_path}")
         print(f"  using cached masks ← {masks_path(stem)}")
         masks_arr, indices, mask_meta = load_masks(stem)
-        validate_cache(mask_meta, "masks", require_coverage=False)
+        validate_cache(mask_meta, "masks")
         mask_frames = mask_meta["total"]
         if mask_frames < video_meta["total"]:
             print(f"Warning: mask cache covers {mask_frames}/{video_meta['total']} frames; using no mask for the remaining {video_meta['total'] - mask_frames} frames", file=sys.stderr)
         masks_data = (masks_arr, indices)
 
     if debug_masks:
-        debug_out = str(Path(output_path).with_suffix("").with_suffix("")) + ".debug.mp4"
+        debug_out = output_path
         meta = video_meta
         total = meta["total"]
         debug_writer = cv2.VideoWriter(
@@ -484,79 +337,53 @@ def process_video(
         print(f"Done.  Debug video → {debug_out}")
         return
 
-    poses: list[Pose] | None = None
-    projections: np.ndarray | None = None
-    meta: dict | None = None
+    from .planar import load_planar_track
+    from .planar_io import projection_path
 
-    if pose_tracker == "planar":
-        from .planar import load_planar_track
-        from .planar_io import projection_path
+    path = projection_path(stem)
+    if not path.exists():
+        raise FileNotFoundError(f"No cached projections at {path}. Generate them with: uv run string-lights generate-poses {input_path}")
+    print(f"  using cached planar projections ← {path}")
+    track, meta = load_planar_track(path)
+    projections = track.projected_lines
 
-        path = projection_path(stem)
-        if not path.exists():
-            raise FileNotFoundError(f"No cached projections at {path}. Generate them with: uv run string-lights planar-track {input_path}")
-        print(f"  using cached planar projections ← {path}")
-        track, meta = load_planar_track(path)
-        projections = track.projected_lines
-
-        validate_cache(meta, "projections", require_coverage=False)
-        if len(projections) < video_meta["total"]:
-            valid = np.flatnonzero(np.isfinite(projections).all(axis=(1, 2, 3)))
-            if not len(valid):
-                raise ValueError("cached projections end early and contain no valid projection to hold; regenerate with planar-track")
-            missing = video_meta["total"] - len(projections)
-            last_valid = int(valid[-1])
-            print(f"Warning: projection cache covers {len(projections)}/{video_meta['total']} frames; holding the last valid projection (frame index {last_valid}) for the remaining {missing} frames", file=sys.stderr)
-            projections = np.concatenate((projections, np.repeat(projections[last_valid:last_valid + 1], missing, axis=0)))
-        meta = {**meta, "fps": video_meta["fps"], "total": video_meta["total"]}
-        projections = projections[:meta["total"]]
-    else:
-        if not poses_path(stem).exists():
-            raise FileNotFoundError(f"No cached poses at {poses_path(stem)}. Generate them with: uv run string-lights poses {input_path}")
-        print(f"  using cached poses ← {poses_path(stem)}")
-        poses, meta = load_poses(stem)
-        validate_cache(meta, "poses")
-        if len(poses) < video_meta["total"]:
-            raise ValueError("cached poses do not cover the requested video frames")
-        meta = {**meta, "fps": video_meta["fps"], "total": video_meta["total"]}
-        poses = poses[:meta["total"]]
+    validate_cache(meta, "projections")
+    if len(projections) < video_meta["total"]:
+        valid = np.flatnonzero(np.isfinite(projections).all(axis=(1, 2, 3)))
+        if not len(valid):
+            raise ValueError("cached projections end early and contain no valid projection to hold; regenerate with generate-poses")
+        missing = video_meta["total"] - len(projections)
+        last_valid = int(valid[-1])
+        print(f"Warning: projection cache covers {len(projections)}/{video_meta['total']} frames; holding the last valid projection (frame index {last_valid}) for the remaining {missing} frames", file=sys.stderr)
+        projections = np.concatenate((projections, np.repeat(projections[last_valid:last_valid + 1], missing, axis=0)))
+    meta = {**meta, "fps": video_meta["fps"], "total": video_meta["total"]}
+    projections = projections[:meta["total"]]
 
     total, fps = meta["total"], meta["fps"]
 
-    npy_path = Path(input_path).with_suffix(".npy")
+    npy_path = artifact_path(input_path, "transcription")
+    if "transcription" in artifact_overrides.get() and not npy_path.is_file() and not random_strings:
+        raise FileNotFoundError(f"Tab data not found: {npy_path}")
     if random_strings or not npy_path.exists():
         if not random_strings:
             print(f"  no tab data at {npy_path}, using random strings")
         strings = get_random_strings(total, fps)
     else:
-        strings = get_strings_to_highlight(input_path, total, fps)
-
-    if SMOOTH_POSES and poses is not None:
-        poses = smooth_poses(poses, fps=fps,
-                             t_min_cutoff=T_MIN_CUTOFF, t_beta=T_BETA,
-                             r_min_cutoff=R_MIN_CUTOFF, r_beta=R_BETA)
+        strings = get_strings_to_highlight(input_path, total, fps, transcription=npy_path)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     render_video(
         input_path,
         output_path,
-        poses,
+        projections,
         strings,
         meta,
         masks=masks_data,
         mask_frames=mask_frames,
-        projections=projections,
         truncate_audio=frames is not None,
     )
-    if projections is not None:
-        observed = int(np.isfinite(projections).all(axis=(1, 2, 3)).sum())
-        print(
-            f"Done.  Planar projection found in {observed}/{total} frames "
-            f"({100 * observed // total}%)."
-        )
-    else:
-        detected = sum(1 for r, _ in poses if r is not None)
-        print(
-            f"Done.  Board pose found in {detected}/{total} frames "
-            f"({100 * detected // total}%)."
-        )
+    observed = int(np.isfinite(projections).all(axis=(1, 2, 3)).sum())
+    print(
+        f"Done.  Planar projection found in {observed}/{total} frames "
+        f"({100 * observed // total}%)."
+    )

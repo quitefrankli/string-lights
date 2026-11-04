@@ -1,48 +1,7 @@
 import cv2
 import numpy as np
 
-from .config import *
-
-_BRIDGE_TOP = np.array(STRING_BRIDGE_TOP, dtype=np.float64)
-_BRIDGE_BOT = np.array(STRING_BRIDGE_BOT, dtype=np.float64)
-_NUT_TOP    = np.array(STRING_NUT_TOP,    dtype=np.float64)
-_NUT_BOT    = np.array(STRING_NUT_BOT,    dtype=np.float64)
-
-
-def _project_string(i: int, rvec, tvec, K):
-    dist = np.zeros(5, dtype=np.float64)
-    t = i / (NUM_STRINGS - 1) if NUM_STRINGS > 1 else 0.0
-    p_bridge = _BRIDGE_TOP + t * (_BRIDGE_BOT - _BRIDGE_TOP)
-    p_nut    = _NUT_TOP    + t * (_NUT_BOT    - _NUT_TOP)
-    pts_2d, _ = cv2.projectPoints(np.array([p_bridge, p_nut], dtype=np.float64), rvec, tvec, K, dist)
-    return tuple(pts_2d[0].ravel().astype(int)), tuple(pts_2d[1].ravel().astype(int))
-
-
-def draw_strings_frame(
-    frame: np.ndarray,
-    frame_idx: int,
-    rvec,
-    tvec,
-    active: list[int],
-    last_active: dict[int, int],
-    K: np.ndarray,
-    fps: float,
-    fade: str = "exponential",
-) -> None:
-    projected_lines = np.array(
-        [_project_string(i, rvec, tvec, K) for i in range(NUM_STRINGS)],
-        dtype=np.float64,
-    ) if rvec is not None else np.full((NUM_STRINGS, 2, 2), np.nan)
-    draw_projected_strings_frame(
-        frame,
-        frame_idx,
-        projected_lines,
-        active,
-        last_active,
-        fps,
-        fade,
-    )
-
+from .config import NUM_STRINGS, STRING_COLOR, STRING_CORE_COLOR, STRING_ALPHA, FADE_DURATION
 
 def draw_projected_strings_frame(
     frame: np.ndarray,
@@ -134,13 +93,3 @@ def draw_projected_strings_frame(
         for a, b in lines:
             cv2.line(core, a, b, STRING_CORE_COLOR, 2, cv2.LINE_AA)
         cv2.addWeighted(core, alpha, frame, 1 - alpha, 0, frame)
-
-
-def draw_strings(frames: list[np.ndarray],
-                 poses: list[tuple[np.ndarray, np.ndarray]], strings: list[list[int]],
-                 K: np.ndarray,
-                 fps: float = 30.0,
-                 fade: str = "exponential") -> None:
-    last_active: dict[int, int] = {}
-    for frame_idx, (frame, (rvec, tvec), active) in enumerate(zip(frames, poses, strings)):
-        draw_strings_frame(frame, frame_idx, rvec, tvec, active, last_active, K, fps, fade)

@@ -11,7 +11,8 @@ from .config import MASK_CHECKPOINT, MASK_CONFIG, MASK_MODEL_ID
 
 
 def seed_mask_path(stem: str) -> Path:
-    return Path("data/components/mask_seeds") / f"{stem}.png"
+    from .paths import artifact_path
+    return artifact_path(stem, "seed_mask")
 
 
 def read_seed(path: str | Path, height: int, width: int) -> np.ndarray:

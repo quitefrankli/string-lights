@@ -314,7 +314,7 @@ function loadVideo() {
   if (item) {
     const tags = [];
     if (item.has_projections) tags.push('planar projections ✓');
-    else if (item.has_poses) tags.push('poses ✓'); else tags.push('tracking ✗');
+    else tags.push('tracking ✗');
     if (item.has_masks) tags.push('masks ✓'); else tags.push('masks ✗');
     setStatus(tags.join('  '));
   }
@@ -333,7 +333,6 @@ async function refreshFileList() {
     opt.value = item.stem;
     let label = item.stem;
     const flags = [];
-    if (item.has_poses) flags.push('P');
     if (item.has_projections) flags.push('H');
     if (item.has_masks) flags.push('M');
     if (flags.length) label += '  [' + flags.join('') + ']';
@@ -413,7 +412,7 @@ document.getElementById('export-btn').addEventListener('click', async () => {
   try {
     let response = await save(false);
     if (response.status === 409) {
-      if (!window.confirm(`data/input/${filename}.npy already exists. Overwrite it with the current transcription?`)) {
+      if (!window.confirm(`Transcription "${filename}" already exists. Overwrite it with the current transcription?`)) {
         setStatus('Export cancelled.');
         return;
       }

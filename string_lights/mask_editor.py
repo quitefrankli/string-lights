@@ -7,21 +7,32 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .pipeline import masks_path, masks_meta_path, save_masks
+from .pipeline import masks_path, masks_meta_path, save_masks as _save_masks
 from .masking import mask_overlay
 from .config import MASK_ENCODING
 
 WIN = "Mask Editor"
-VIDEO_EXTS = [".mp4", ".avi", ".mov", ".mkv", ".flv", ".m4v"]
-INPUT_DIR = Path("data/input")
+from .paths import resolve_video, project_dir, artifact_overrides
+
+
+def save_masks(stem, masks, indices, meta):
+    overrides = artifact_overrides.get()
+    if "mask_output" not in overrides:
+        return _save_masks(stem, masks, indices, meta)
+    output_overrides = {**overrides, "masks": overrides["mask_output"]}
+    output_overrides.pop("mask_metadata", None)
+    token = artifact_overrides.set(output_overrides)
+    try:
+        return _save_masks(stem, masks, indices, meta)
+    finally:
+        artifact_overrides.reset(token)
 
 
 def _resolve_input(stem: str) -> Path | None:
-    for ext in VIDEO_EXTS:
-        p = INPUT_DIR / (stem + ext)
-        if p.exists():
-            return p
-    return None
+    try:
+        return resolve_video(stem)
+    except FileNotFoundError:
+        return None
 
 
 def _load_meta(stem: str) -> tuple[np.ndarray, dict]:
@@ -76,11 +87,11 @@ def _get_frame(cap: cv2.VideoCapture, idx: int, h: int, w: int) -> np.ndarray:
 def run_mask_editor(stem: str) -> None:
     video_path = _resolve_input(stem)
     if video_path is None:
-        print(f"No input video found for '{stem}' in {INPUT_DIR}")
+        print(f"No input video found for '{stem}' in the project")
         return
     npz = masks_path(stem)
     if not npz.exists():
-        print(f"No cached masks for '{stem}'. Run: uv run string-lights masks {stem}")
+        print(f"No cached masks for '{stem}'. Run: uv run string-lights generate-masks {stem}")
         return
 
     indices, meta = _load_meta(stem)
@@ -88,7 +99,11 @@ def run_mask_editor(stem: str) -> None:
     h, w = meta["h"], meta["w"]
     fps = meta["fps"]
 
-    tmp = Path(tempfile.mktemp(suffix='.npy'))
+    directory = project_dir(stem) / "tmp"
+    directory.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(suffix=".npy", dir=directory, delete=False)
+    tmp = Path(handle.name)
+    handle.close()
     print(f"Decompressing {N} masks ({N * h * w / 1e9:.1f} GB uncompressed)...")
     try:
         masks = _extract_to_mmap(npz, tmp)

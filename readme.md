@@ -1,19 +1,51 @@
 # string-lights
 
-A tool for processing video frames of a guitar with an ArUco marker board to detect board pose and apply visual overlays.
+Track guitar strings with planar image features and render string highlights and lyrics.
 
 ## Usage
 
-`uv run string-lights $INPUT_MP4`
+`uv run string-lights render-strings cupid`
+
+## Project files and custom paths
+
+Each clip lives in `data/projects/<project>/`. A project name resolves to
+`source.mp4` (preferred), `source.mov`, or another supported source extension.
+Profiles (`profile.json`, `profile.npz`), `transcription.npy`, and `lyrics.json`
+live at project level. Tracking caches live in `tracking/`, hand masks in
+`masks/`, and final exports in `renders/`. Put previews and experiments in `tmp/`.
+See [AGENTS.md](AGENTS.md) for the complete layout and agent guidance.
+
+```bash
+uv run string-lights render-strings cupid
+uv run string-lights render-strings cupid --output data/projects/cupid/tmp/test.mp4
+uv run string-lights generate-masks cupid --output data/projects/cupid/tmp/trial.npz
+uv run string-lights render-strings cupid --masks data/projects/cupid/tmp/trial.npz \
+  --output data/projects/cupid/tmp/trial-render.mp4
+uv run string-lights render-strings /path/to/clip.mov --project-dir data/projects/cupid \
+  --projections /path/to/custom-tracking.npz \
+  --transcription /path/to/custom-tabs.npy --output /path/to/result.mp4
+uv run string-lights --projects-dir /path/to/projects tabs-editor cupid
+```
+
+File commands accept `--project-dir` and explicit artifact overrides (see each
+command's `--help`). `generate-masks`, `planar-profile`, and `generate-poses` accept
+`--output`. `render-strings` accepts `--output`, `--projections`, `--masks`,
+`--mask-metadata`, and `--transcription`. `tune-guitar-plane` accepts `--annotation`;
+`mask-edit` accepts `--masks`, `--mask-metadata`, and `--output`.
+A custom mask file defaults to a sibling `<stem>.meta.npz` metadata file;
+`generate-masks --metadata-output` or `render-strings --mask-metadata` can override it.
+`--debug-masks` writes `tmp/masks-debug.mp4` unless `--output` is supplied.
+
+Launch the tabs editor for one project with `uv run string-lights tabs-editor cupid`.
+A project name is required; the editor reads and saves that project's files.
 
 ## Useful Commands
 
 ### Generate caches without rendering
 
 ```bash
-uv run string-lights planar-track cupid.mp4 --frames 500
-uv run string-lights masks cupid.mp4 --frames 500
-uv run string-lights poses VIDEO.mp4 --frames 500
+uv run string-lights generate-poses cupid --frames 500
+uv run string-lights generate-masks cupid --frames 500
 ```
 
 Mask generation uses SAM2Matting Base+ video tracking, with soft opacity caches
@@ -23,10 +55,10 @@ retains only its required recent memory plus the seed frame.
 Supply a first-frame grayscale hand mask (white hands, black background):
 
 ```bash
-uv run string-lights masks VIDEO.mp4 --seed-mask seed.png
+uv run string-lights generate-masks VIDEO --seed-mask seed.png
 ```
 
-The default seed path is `data/components/mask_seeds/VIDEO.png`.
+The default seed path is `data/projects/VIDEO/masks/seed.png`.
 A motion-aligned three-frame median reduces isolated opacity flicker by default;
 use `--no-stabilize` to retain raw model output. Stable gaps can remain open,
 but this filter does not correct persistent segmentation errors.
@@ -35,24 +67,21 @@ Tracking processes every frame; `--frame-skip N` samples the masks saved to cach
 an existing cache. Old binary caches must be regenerated.
 The vendored SAM2Matting code and weights use CC BY-NC-SA 4.0 for non-commercial research.
 
-`poses` estimates ArUco board poses; `planar-track` generates markerless
-projections. All three commands accept `--force` to replace existing caches.
-The standalone `masks` and `poses` commands replace `run --masks` and `run --poses`.
+`generate-poses` generates markerless projections. Both tracking and masking
+commands accept `--force` to replace existing caches.
 
 Render with the projection and mask caches:
 
 ```bash
-uv run string-lights run cupid.mp4 --frames 500 --pose-tracker planar
+uv run string-lights render-strings cupid --frames 500
 ```
 
-`run` always reads existing caches. Choose `--pose-tracker aruco` (the default)
-for board poses or `--pose-tracker planar` for projections. Masks are loaded
+`render-strings` always reads existing planar projection caches. Masks are loaded
 from cache unless `--disable-masking` is supplied. If a mask cache ends before
 the video, remaining frames render without hand masking. If planar projections
 end early, remaining frames hold the last valid cached projection. Both fallbacks
-emit warnings and leave caches unchanged. Missing caches, projections with no
-valid frame to hold, and insufficient ArUco pose coverage must be generated
-separately; rendering never runs SAM or tracking.
+emit warnings and leave caches unchanged. Missing caches and projections with no
+valid frame to hold must be generated separately; rendering never runs SAM or tracking.
 
 ### Convert .mov to .mp4 (with audio)
 ```bash
@@ -106,18 +135,26 @@ exports still read the original video and use the selected playback format.
 ### Planar tuner
 
 ```bash
-uv run string-lights tune littleroot_town.mp4 --no-aruco
+uv run string-lights tune-guitar-plane littleroot_town
 ```
 
 Opens a local browser editor using the video's existing JSON annotation in
-`data/components/profiles/`. Wheel to zoom, right-drag or Space-drag to pan,
+`data/projects/VIDEO/profile.json`. Wheel to zoom, right-drag or Space-drag to pan,
 and left-drag string endpoints or region vertices. Select a drawing tool and
 click at least three vertices, then finish the polygon. Undo reverses edits.
 The reference-frame slider keeps existing coordinates, so check their alignment
 after switching frames. Save profile writes the JSON and `.npz` profile.
-Re-run `planar-track` afterward to refresh cached projections.
+Re-run `generate-poses` afterward to refresh cached projections.
 
-Use `tune VIDEO --aruco` for the original board-based calibration window.
+### Compare planar tracking results
 
-- **Board**: 6×6 ChArUco board with 12 mm squares and 9 mm markers
-- **Camera**: iPhone 15 main camera (1800 px focal length at 1920 px width)
+Compare an experimental projection cache with a frame-aligned reference cache:
+
+```bash
+uv run string-lights planar-validate cupid \
+  --projections data/projects/cupid/tmp/trial.npz \
+  --reference data/projects/cupid/tracking/projections.npz
+```
+
+The command checks coverage and projection errors against configurable limits.
+The reference must use the same dimensions and frame count as the trial cache.

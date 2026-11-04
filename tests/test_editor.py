@@ -6,18 +6,18 @@ from string_lights.planar import (
 )
 
 
-def test_editor_planar_overlay_without_aruco_poses(tmp_path, monkeypatch):
+def test_editor_planar_overlay(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    inputs = tmp_path / 'data/input'
+    inputs = tmp_path / 'data/projects/clip'
     inputs.mkdir(parents=True)
-    (inputs / 'clip.mp4').touch()
+    (inputs / 'source.mp4').touch()
     lines = np.arange(24, dtype=float).reshape(6, 2, 2) + 0.5
     diagnostics = TrackDiagnostics(30, 25, 0.8, 0.5, 0.75)
     track = PlanarTrack((
         PlanarFrame(np.eye(3), lines, TrackState.OBSERVED, diagnostics, 0),
         PlanarFrame(None, np.full((6, 2, 2), np.nan), TrackState.UNRESOLVED, diagnostics),
     ), ('a' * 64,))
-    save_planar_track('data/components/projections/clip.npz', track,
+    save_planar_track('data/projects/clip/tracking/projections.npz', track,
                       {'w': 320, 'h': 240, 'fps': 30.0, 'total': 2})
     client = create_app().test_client()
     response = client.get('/strings/clip')
@@ -28,30 +28,13 @@ def test_editor_planar_overlay_without_aruco_poses(tmp_path, monkeypatch):
     }
     item = client.get('/list').json['items'][0]
     assert item['has_projections'] is True
-    assert item['has_poses'] is False
 
 
-def test_editor_aruco_overlay_still_supported(tmp_path, monkeypatch):
-    from string_lights.pipeline import save_poses
-
-    monkeypatch.chdir(tmp_path)
-    save_poses('clip', [
-        (np.zeros((3, 1)), np.array([[0.0], [0.0], [1.0]])),
-        (None, None),
-    ], {'w': 320, 'h': 240, 'fps': 30.0, 'total': 2})
-    response = create_app().test_client().get('/strings/clip')
-    assert response.status_code == 200
-    assert len(response.json['lines'][0]) == 6
-    assert all(len(line) == 4 for line in response.json['lines'][0])
-    assert response.json['lines'][1] is None
-
-
-def test_editor_missing_tracking_explains_both_options(tmp_path, monkeypatch):
+def test_editor_missing_tracking_explains_planar_command(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     response = create_app().test_client().get('/strings/missing')
     assert response.status_code == 400
-    assert 'poses missing' in response.text
-    assert 'planar-track missing' in response.text
+    assert 'generate-poses missing' in response.text
 
 
 def test_browser_video_converts_and_reuses_preview(tmp_path, monkeypatch):
@@ -87,7 +70,7 @@ def test_export_saves_and_requires_confirmation_before_overwrite(tmp_path, monke
     payload = {'filename': 'clip', 'frames': [[0] * 6, [1] * 6]}
     response = client.post('/export', json=payload)
     assert response.status_code == 200
-    target = tmp_path / 'data/input/clip.npy'
+    target = tmp_path / 'data/projects/clip/transcription.npy'
     np.testing.assert_array_equal(np.load(target), payload['frames'])
     original = target.read_bytes()
     payload['frames'] = [[2] * 6]
@@ -106,18 +89,20 @@ def test_export_rejects_path_traversal_and_invalid_frames(tmp_path, monkeypatch)
     for name in ['../escape', '/tmp/escape', 'a/b', 'a\\b', '', '..']:
         assert client.post('/export', json={'filename': name, 'frames': [[0] * 6]}).status_code == 400
     assert client.post('/export', json={'filename': 'clip', 'frames': [[1]]}).status_code == 400
-    assert not (tmp_path / 'data/input/clip.npy').exists()
+    assert not (tmp_path / 'data/projects/clip/transcription.npy').exists()
 
 
 def test_editor_lists_and_loads_transcription_with_different_name(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    inputs = tmp_path / 'data/input'
+    inputs = tmp_path / 'data/projects/recording'
     inputs.mkdir(parents=True)
-    (inputs / 'recording.mp4').touch()
+    (inputs / 'source.mp4').touch()
+    other = tmp_path / 'data/projects/different take'
+    other.mkdir()
     frames = np.zeros((44, 6), dtype=np.int64)
     frames[6:8, 2] = 1
-    np.save(inputs / 'different take.npy', frames)
-    np.save(inputs / 'recording.npy', np.zeros((44, 6), dtype=np.int64))
+    np.save(other / 'transcription.npy', frames)
+    np.save(inputs / 'transcription.npy', np.zeros((44, 6), dtype=np.int64))
     client = create_app().test_client()
     listing = client.get('/list').json
     assert listing['transcriptions'] == ['different take', 'recording']
@@ -129,15 +114,42 @@ def test_editor_lists_and_loads_transcription_with_different_name(tmp_path, monk
 
 def test_editor_rejects_invalid_transcription_without_loading(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    inputs = tmp_path / 'data/input'
-    inputs.mkdir(parents=True)
-    np.save(inputs / 'wrong-shape.npy', np.zeros((10, 3)))
-    np.save(inputs / 'nonfinite.npy', np.full((10, 6), np.nan))
-    (inputs / 'broken.npy').write_bytes(b'not a numpy file')
-    (inputs / 'empty.npy').touch()
+    from string_lights.paths import artifact_path
+    for stem in ['wrong-shape', 'nonfinite', 'broken', 'empty']:
+        artifact_path(stem, 'transcription').parent.mkdir(parents=True)
+    np.save(artifact_path('wrong-shape', 'transcription'), np.zeros((10, 3)))
+    np.save(artifact_path('nonfinite', 'transcription'), np.full((10, 6), np.nan))
+    artifact_path('broken', 'transcription').write_bytes(b'not a numpy file')
+    artifact_path('empty', 'transcription').touch()
     client = create_app().test_client()
     for stem in ['wrong-shape', 'nonfinite', 'broken', 'empty']:
         response = client.get('/load/' + stem)
         assert response.status_code == 400
         assert 'six string values' in response.json['error']
     assert client.get('/load/missing').status_code == 404
+
+
+def test_project_editor_scopes_listing_loading_and_saving(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for name in ('cupid', 'gunjo'):
+        directory = tmp_path / 'data/projects' / name
+        directory.mkdir(parents=True)
+        (directory / 'source.mp4').touch()
+        np.save(directory / 'transcription.npy', np.zeros((2, 6), dtype=np.int64))
+    client = create_app('cupid').test_client()
+    listing = client.get('/list').json
+    assert [item['stem'] for item in listing['items']] == ['cupid']
+    assert listing['transcriptions'] == ['cupid']
+    assert client.get('/load/cupid').status_code == 200
+    assert client.get('/load/gunjo').status_code == 404
+    assert client.get('/video/gunjo').status_code == 404
+    assert client.get('/strings/gunjo').status_code == 404
+    assert client.post('/export', json={'filename': 'gunjo', 'frames': [[1] * 6],
+                                       'overwrite': True}).status_code == 400
+    response = client.post('/export', json={'filename': 'cupid', 'frames': [[1] * 6],
+                                           'overwrite': True})
+    assert response.status_code == 200
+    np.testing.assert_array_equal(np.load('data/projects/cupid/transcription.npy'), [[1] * 6])
+    np.testing.assert_array_equal(np.load('data/projects/gunjo/transcription.npy'), np.zeros((2, 6)))
+    from string_lights import paths
+    assert paths.project_override.get() is None

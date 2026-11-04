@@ -4,7 +4,7 @@
 the editor's six-column `.npy` highlight format and a JSON timing/provenance
 sidecar. It does not automatically read notes or rhythm from a PDF.
 
-Create a score file, for example `data/input/example_score.json`:
+Create a score file, for example `data/projects/example/tmp/score.json`:
 
 ```json
 {
@@ -27,8 +27,8 @@ fret or `X` for a muted strike. Frets and technique descriptions are retained in
 the sidecar; the highlight array records string activation, not pitch.
 
 ```bash
-uv run python scripts/generate_transcription.py data/input/example_score.json \
-  --output data/input/example.npy
+uv run python scripts/generate_transcription.py data/projects/example/tmp/score.json \
+  --output data/projects/example/transcription.npy
 ```
 
 Options:

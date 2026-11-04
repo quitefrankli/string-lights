@@ -143,18 +143,18 @@ then replace it with the verified file.
 
 ## Reusing tracking caches
 
-The application chooses artifacts by input filename stem:
+The application stores artifacts in the selected project directory:
 
-- `data/components/projections/VIDEO.npz`: planar projections.
-- `data/components/masks/VIDEO.npz` and `VIDEO.meta.npz`: hand masks and metadata.
-- `data/input/VIDEO.npy`: string highlight data.
-- `data/components/profiles/VIDEO.json`: profile annotation; a compiled profile
-  may also exist as `VIDEO.npz` in that directory.
+- `data/projects/VIDEO/tracking/projections.npz`: planar projections.
+- `data/projects/VIDEO/masks/masks.npz` and `metadata.npz`: hand masks and metadata.
+- `data/projects/VIDEO/transcription.npy`: string highlight data.
+- `data/projects/VIDEO/profile.json`: profile annotation; a compiled profile
+  may also exist as `profile.npz` in that directory.
 
-For a new stem, copy the matching artifacts and back up existing destinations.
+For a new project, copy the matching artifacts and preserve existing destinations in `tmp/`.
 Do not leave an unrelated compiled profile paired with a newly copied annotation.
 Cached rendering requires projections and masks; the profile is useful for future
-tracking or editing. `run` reads caches without regenerating them.
+tracking or editing. `render-strings` reads caches without regenerating them.
 
 Reuse is valid only when frame content, orientation, geometry, and frame order
 still match. The application checks dimensions and coverage, but those checks
@@ -173,11 +173,10 @@ these fallbacks without changing the cache files:
   remain unchanged. If no valid projection exists, rendering fails with a clear
   error. A held projection does not track any new motion in the extra frames.
 
-ArUco pose coverage is still required. To explicitly limit a render to a cached
-segment instead:
+To explicitly limit a render to a cached segment instead:
 
 ```bash
-uv run string-lights run --pose-tracker planar --frames CACHED_FRAME_COUNT VIDEO.mp4
+uv run string-lights render-strings --frames CACHED_FRAME_COUNT VIDEO.mp4
 ```
 
 ## Limits of the overlay renderer

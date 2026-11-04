@@ -714,7 +714,7 @@ async function pollRender() {
   const renderBtn = document.getElementById('render-btn');
   try {
     const r = await fetch('/render-status');
-    const { state, progress, error, stem } = await r.json();
+    const { state, progress, error, stem, output } = await r.json();
 
     if (state === 'running') {
       const pct = Math.round((progress || 0) * 100);
@@ -725,7 +725,7 @@ async function pollRender() {
       renderBtn.disabled = false;
       if (state === 'done') {
         window.location.href = "/download/" + stem;
-        setStatus(`done → data/output/${stem}.lyrics.mp4 ✓`, 'ok');
+        setStatus(`done → ${output || stem} ✓`, 'ok');
       } else if (state === 'error') {
         setStatus('render failed: ' + error, 'err');
       }

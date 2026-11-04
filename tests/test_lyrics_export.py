@@ -39,19 +39,19 @@ def test_lyrics_in_padding_are_not_moved_into_original_video():
 def test_export_layout_and_audio(tmp_path, monkeypatch, aspect, dimensions, export_format, audio_codec):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(lyrics_editor, "_render", {"state": "running"})
-    inputs = tmp_path / "data/input"
+    inputs = tmp_path / "data/projects/clip"
     inputs.mkdir(parents=True)
     subprocess.run([
         "ffmpeg", "-v", "error", "-f", "lavfi", "-i",
         "color=c=red:s=160x90:r=10:d=0.3", "-f", "lavfi", "-i",
         "sine=frequency=440:duration=0.3", "-c:v", "libx264", "-c:a", "alac",
-        "-shortest", str(inputs / "clip.mp4"),
+        "-shortest", str(inputs / "source.mp4"),
     ], check=True)
 
     lyrics_editor._do_render("clip", aspect, export_format)
 
     assert lyrics_editor._render["state"] == "done", lyrics_editor._render
-    output = "data/output/clip.lyrics.mp4"
+    output = "data/projects/clip/renders/strings-lyrics.mp4"
     streams = json.loads(subprocess.check_output([
         "ffprobe", "-v", "error", "-show_streams", "-of", "json", output,
     ]))["streams"]

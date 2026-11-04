@@ -9,8 +9,7 @@ import numpy as np
 from flask import Flask, jsonify, request, send_from_directory, render_template
 
 VIDEO_EXTS = [".mp4", ".avi", ".mov", ".mkv", ".flv", ".m4v"]
-INPUT_DIR  = Path("data/input")
-OUTPUT_DIR = Path("data/output")
+from .paths import artifact_path, project_dir, resolve_video, list_projects
 
 # Single-slot render status (one render at a time is fine for local use)
 _render: dict = {"state": "idle", "stem": None, "progress": 0.0, "error": None}
@@ -18,12 +17,10 @@ _render_lock = threading.Lock()
 
 
 def _resolve_input(stem: str) -> Path | None:
-    for directory in (INPUT_DIR / "uploads", INPUT_DIR):
-        for ext in VIDEO_EXTS:
-            p = directory / (stem + ext)
-            if p.exists():
-                return p
-    return None
+    try:
+        return resolve_video(stem)
+    except FileNotFoundError:
+        return None
 
 
 def _base_video(stem: str) -> Path | None:
@@ -71,8 +68,8 @@ def _do_render(stem: str, aspect: str = "padded", export_format: str = "source_a
             raise FileNotFoundError(f"No video found for '{stem}'")
 
         lyrics = load_lyrics(stem)
-        out = OUTPUT_DIR / f"{stem}.lyrics.mp4"
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        out = artifact_path(stem, "lyrics_render")
+        out.parent.mkdir(parents=True, exist_ok=True)
 
         cap = cv2.VideoCapture(str(base))
         if not cap.isOpened():
@@ -116,7 +113,7 @@ def _do_render(stem: str, aspect: str = "padded", export_format: str = "source_a
             raise RuntimeError(f"ffmpeg exited with code {rc}")
 
         with _render_lock:
-            _render.update(state="done", progress=1.0, error=None)
+            _render.update(state="done", progress=1.0, error=None, output=str(out))
 
     except Exception as exc:
         with _render_lock:
@@ -136,24 +133,25 @@ def create_lyrics_app() -> Flask:
             return jsonify(error="Unsupported video format"), 400
         name = secure_filename(file.filename or "")
         base = Path(name).stem or "video"
-        directory = INPUT_DIR / "uploads"
-        directory.mkdir(parents=True, exist_ok=True)
         content = file.read()
         digest = hashlib.sha256(content).digest()
         stem = base
         suffix = 2
-        while any((directory / (stem + extension)).exists() for extension in VIDEO_EXTS):
-            target = directory / (stem + ext)
+        while project_dir(stem).exists():
+            target = project_dir(stem) / ("source" + ext)
             if target.exists() and hashlib.sha256(target.read_bytes()).digest() == digest:
                 return jsonify(stem=stem)
             stem = f"{base}_{suffix}"
             suffix += 1
-        (directory / (stem + ext)).write_bytes(content)
+        directory = project_dir(stem)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / ("source" + ext)).write_bytes(content)
         return jsonify(stem=stem)
 
     @app.get("/download/<stem>")
     def download(stem):
-        return send_from_directory(OUTPUT_DIR.resolve(), stem + ".lyrics.mp4", as_attachment=True)
+        target = artifact_path(stem, "lyrics_render")
+        return send_from_directory(target.parent.resolve(), target.name, as_attachment=True)
 
 
     @app.route("/")
@@ -162,12 +160,7 @@ def create_lyrics_app() -> Flask:
 
     @app.route("/list")
     def list_videos():
-        seen: dict[str, Path] = {}
-        for directory in (INPUT_DIR / "uploads", INPUT_DIR):
-            for ext in VIDEO_EXTS:
-                for p in directory.glob(f"*{ext}"):
-                    seen.setdefault(p.stem, p)
-        return jsonify({"items": [{"stem": s} for s in sorted(seen)]})
+        return jsonify({"items": [{"stem": s} for s in list_projects()]})
 
     @app.route("/video/<stem>")
     def video(stem):

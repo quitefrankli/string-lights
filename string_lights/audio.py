@@ -44,8 +44,8 @@ def _clean_tab(tab: np.ndarray) -> np.ndarray:
     return out
 
 
-def get_strings_to_highlight(input_path: str, total_frames: int, video_fps: float) -> list[list[int]]:
-    npy_path = Path(input_path).with_suffix(".npy")
+def get_strings_to_highlight(input_path: str, total_frames: int, video_fps: float, *, transcription: Path | None = None) -> list[list[int]]:
+    npy_path = transcription if transcription is not None else Path(input_path).with_suffix(".npy")
     if not npy_path.exists():
         raise FileNotFoundError(f"Tab data not found: {npy_path}")
 

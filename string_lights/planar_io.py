@@ -8,27 +8,17 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from .board import camera_matrix
-from .config import (
-    NUM_STRINGS,
-    STRING_BRIDGE_BOT,
-    STRING_BRIDGE_TOP,
-    STRING_NUT_BOT,
-    STRING_NUT_TOP,
-)
 from .planar import PlanarProfile, PlanarTrack, create_planar_profile, track_planar_frames
 
-
-PROFILES_DIR = Path("data/components/profiles")
-PROJECTIONS_DIR = Path("data/components/projections")
+from .paths import artifact_path
 
 
 def profile_path(name: str) -> Path:
-    return PROFILES_DIR / f"{name}.npz"
+    return artifact_path(name, "profile")
 
 
 def projection_path(stem: str) -> Path:
-    return PROJECTIONS_DIR / f"{stem}.npz"
+    return artifact_path(stem, "projections")
 
 
 def create_planar_profile_from_annotation(
@@ -81,7 +71,7 @@ def track_planar_video(
     if max_frames is not None:
         total = min(total, max_frames) if total > 0 else max_frames
     try:
-        with tqdm(total=total or None, desc="planar-track", unit="f") as progress:
+        with tqdm(total=total or None, desc="generate-poses", unit="f") as progress:
             def tracked_frames():
                 for frame in frames():
                     yield frame
@@ -92,42 +82,6 @@ def track_planar_video(
         cap.release()
     metadata["total"] = len(track.frames)
     return track, metadata
-
-
-def projected_strings_from_pose_cache(
-    pose_path: str | Path,
-) -> tuple[np.ndarray, dict[str, int | float]]:
-    with np.load(Path(pose_path), allow_pickle=False) as poses:
-        rvecs = poses["rvecs"]
-        tvecs = poses["tvecs"]
-        metadata: dict[str, int | float] = {
-            "w": int(poses["w"]),
-            "h": int(poses["h"]),
-            "fps": float(poses["fps"]),
-            "total": int(poses["total"]),
-        }
-    if len(rvecs) != metadata["total"] or len(tvecs) != metadata["total"]:
-        raise ValueError("pose cache arrays do not match metadata total")
-
-    bridge_top = np.asarray(STRING_BRIDGE_TOP, dtype=np.float64)
-    bridge_bottom = np.asarray(STRING_BRIDGE_BOT, dtype=np.float64)
-    nut_top = np.asarray(STRING_NUT_TOP, dtype=np.float64)
-    nut_bottom = np.asarray(STRING_NUT_BOT, dtype=np.float64)
-    object_lines = np.empty((NUM_STRINGS, 2, 3), dtype=np.float64)
-    for index in range(NUM_STRINGS):
-        alpha = index / (NUM_STRINGS - 1) if NUM_STRINGS > 1 else 0.0
-        object_lines[index, 0] = bridge_top + alpha * (bridge_bottom - bridge_top)
-        object_lines[index, 1] = nut_top + alpha * (nut_bottom - nut_top)
-
-    K = camera_matrix(metadata["w"], metadata["h"])
-    projected = np.full((metadata["total"], NUM_STRINGS, 2, 2), np.nan, dtype=np.float64)
-    distortion = np.zeros(5, dtype=np.float64)
-    for index, (rvec, tvec) in enumerate(zip(rvecs, tvecs)):
-        if not np.isfinite(rvec).all() or not np.isfinite(tvec).all():
-            continue
-        points, _ = cv2.projectPoints(object_lines.reshape(-1, 3), rvec, tvec, K, distortion)
-        projected[index] = points.reshape(NUM_STRINGS, 2, 2)
-    return projected, metadata
 
 
 def _read_video_frame(video_path: str | Path, frame_index: int) -> np.ndarray:

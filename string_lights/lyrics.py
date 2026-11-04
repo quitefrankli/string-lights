@@ -9,7 +9,6 @@ try:
 except ImportError:
     _PIL = False
 
-LYRICS_DIR = Path("data/lyrics")
 _FONT_CACHE: dict[int, any] = {}
 _FONT_PATHS = [
     "/usr/share/fonts/truetype/quicksand/Quicksand-Regular.ttf",
@@ -19,7 +18,8 @@ _FONT_PATHS = [
 
 
 def lyrics_path(stem: str) -> Path:
-    return LYRICS_DIR / f"{stem}.json"
+    from .paths import artifact_path
+    return artifact_path(stem, "lyrics")
 
 
 def load_lyrics(stem: str) -> list[dict]:
