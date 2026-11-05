@@ -98,6 +98,8 @@ Replace `00:00:10` and `00:00:30` with your desired start and end timestamps (`H
 
 To generate highlight data from a manually annotated tablature score, use
 `scripts/generate_transcription.py`. See [the score format and workflow](docs/tab-transcription.md).
+For variable string-light hold lengths, see the
+[PDF-based note-duration workflow](docs/note-duration-workflow.md).
 
 ### Lyrics export
 
@@ -158,3 +160,88 @@ uv run string-lights planar-validate cupid \
 
 The command checks coverage and projection errors against configurable limits.
 The reference must use the same dimensions and frame count as the trial cache.
+
+### Generate transcription from audio
+
+```bash
+uv run generate-transcription cupid --capo 2
+uv run generate-transcription /path/to/video.mp4 --project-dir data/projects/my-project --capo 2
+```
+
+Generates `transcription.npy` and `transcription.json` in the project directory.
+The array uses 44 Hz, with columns low E, A, D, G, B, high E. The JSON companion
+records detected pitches/times, string/fret assignments, unassigned events, capo,
+tuning, model revisions/checksums and generation settings. The renderer only
+needs the array. The companion describes the generation run; later edits in the
+tabs editor do not update it. Its array checksum identifies that original export.
+
+`--capo` defaults to 0. `--tuning` accepts six open-string MIDI pitches before the
+capo, in low-to-high string order (default `40 45 50 55 59 64`). Choose `--model fl`
+for François Leduc instead of the default GAPS pitch model. `--device auto`
+selects CUDA when accessible, otherwise CPU; `--device cuda` requires GPU access.
+FFmpeg and ffprobe must be installed. Pretrained weights download on first run
+and are checksum-verified; `--model-cache` overrides the shared default
+`data/tmp/transcription-models` cache. Models are estimates: review strings in
+the tabs editor before final rendering. PDF-assisted refinement is described below.
+
+For experiments, give an explicit output path and optionally limit duration:
+
+```bash
+uv run generate-transcription cupid --capo 2 --duration 15 \
+  --output data/projects/cupid-onset-benchmark/tmp/generated.npy
+```
+
+`--output` also determines the JSON companion path. Existing array or JSON files
+are preserved unless `--force` is supplied. `--projects-dir` selects a different
+project collection. `--pulse` sets light hold length (default .09 seconds);
+`--evidence-window` sets post-attack string evidence duration (default .08).
+The former `generate-timings` command has been replaced; timing detection is
+part of transcription generation.
+
+### Refine string choices using a tab PDF
+
+```bash
+uv run refine-transcription my-project --tabs /path/to/tabs.pdf --force
+```
+
+Requires `codex` installed and authenticated, plus Poppler's `pdftoppm` and
+`pdfinfo`. The command renders PDF pages, calls non-interactive `codex exec`
+with image inputs, a read-only sandbox and a JSON output schema, then validates
+and caches the extracted string/fret sequence. This sends the rendered tab pages
+to the configured Codex provider and uses the account's normal Codex usage.
+
+Python aligns tab pitches to the generated audio-note sequence, accounting for
+capo and tuning. Matched notes receive the tab's string choice; audio pitches
+and timestamps stay fixed. Uncertain events, unmatched notes and ambiguous
+unisons retain their audio assignments and are listed in the JSON companion.
+The aligner can skip missing/extra notes; it is a heuristic and still needs review.
+It does not add PDF-only attacks or fix incorrect audio pitches.
+
+The input must have its matching generation JSON with an intact array checksum.
+Arrays edited separately from their companion are rejected. PDF/transcription
+capo conflicts are also rejected. By default, at least half the audio notes must
+align; inspect the extraction before lowering `--min-coverage`.
+
+All PDF pages are read by default. Use `--pages 1`, `--first-bar 2`, `--last-bar 8`
+to limit extraction, and `--codex-model` to select a model. Extracted `tabs.json`,
+page images, prompt/schema and Codex log are cached under the project's
+`tmp/tab-refinement/`. Cache identity includes the PDF checksum, page/bar range,
+prompt/schema version, CLI version and requested model. A matching extraction is
+reused without another inference call. `--work-dir` overrides that location.
+The default extraction timeout is 300 seconds (`--timeout` overrides it).
+
+Use explicit paths for experiments:
+
+```bash
+uv run refine-transcription cupid --tabs data/projects/cupid/Cupid.pdf \
+  --transcription data/projects/cupid-onset-benchmark/tmp/command-transcription.npy \
+  --output data/projects/cupid-onset-benchmark/tmp/pdf-refined.npy \
+  --work-dir data/projects/cupid-onset-benchmark/tmp/pdf-refinement \
+  --pages 1 --first-bar 2 --last-bar 8
+```
+
+Existing outputs require `--force`. Without `--output`, refinement updates the
+project's `transcription.npy` and companion. `--transcription` selects an input
+array; `--projects-dir` and `--project-dir` work as in generation. The companion
+records extraction provenance, note-level matches, changed strings, unresolved
+notes and a new output checksum. Use the tabs editor to review before rendering.

@@ -34,17 +34,24 @@ def generate(score, *, bpm, first_bar, last_bar, beats_per_bar, offset, pulse,
         if not isinstance(entries, list):
             raise ValueError(f"Bar {bar}: expected an array of entries")
         for entry in entries:
-            if not isinstance(entry, list) or len(entry) not in (2, 3):
-                raise ValueError(f"Bar {bar}: expected [beat, notes, optional technique]")
-            beat, notes, *technique = entry
+            if not isinstance(entry, list) or len(entry) not in (2, 3, 4):
+                raise ValueError(f"Bar {bar}: expected [beat, notes, optional technique, optional duration_beats]")
+            beat, notes = entry[:2]
+            technique = entry[2] if len(entry) >= 3 else "pluck"
+            duration_beats = entry[3] if len(entry) == 4 else None
             if (isinstance(beat, bool) or not isinstance(beat, (int, float))
                     or not np.isfinite(beat) or not 0 <= beat < beats_per_bar):
                 raise ValueError(f"Bar {bar}: beat must be within the bar")
             if (not isinstance(notes, str) or not notes.split()
                     or any(not re.fullmatch(r"[EADGBe](?:\d+|X)", note) for note in notes.split())):
                 raise ValueError(f"Bar {bar}: use notes such as E3, A0, e5 or EX")
-            if technique and not isinstance(technique[0], str):
+            if not isinstance(technique, str):
                 raise ValueError(f"Bar {bar}: technique must be text")
+            if len(entry) == 4 and (
+                    isinstance(duration_beats, bool)
+                    or not isinstance(duration_beats, (int, float))
+                    or not np.isfinite(duration_beats) or duration_beats <= 0):
+                raise ValueError(f"Bar {bar}: duration_beats must be finite and positive")
             if not first_bar <= bar <= last_bar:
                 continue
             if not include_percussion:
@@ -54,10 +61,13 @@ def generate(score, *, bpm, first_bar, last_bar, beats_per_bar, offset, pulse,
             start = offset + ((bar - first_bar) * beats_per_bar + beat) * 60 / bpm
             columns = sorted({"EADGBe".index(note[0]) for note in notes.split()})
             first = round(start * TRANSCRIPTION_FPS)
-            stop = min(len(frames), first + max(1, round(pulse * TRANSCRIPTION_FPS)))
+            note_duration = pulse if duration_beats is None else duration_beats * 60 / bpm
+            stop = min(len(frames), first + max(1, round(note_duration * TRANSCRIPTION_FPS)))
             frames[first:stop, columns] = 1
             events.append(dict(bar=bar, beat=beat, seconds=start, notes=notes,
-                               columns=columns, technique=technique[0] if technique else "pluck"))
+                               columns=columns, technique=technique,
+                               duration_beats=duration_beats, duration_seconds=note_duration,
+                               end_seconds=stop / TRANSCRIPTION_FPS))
     metadata = dict(
         source=score.get("source", "Manually annotated tablature"), bpm=bpm,
         first_bar=first_bar, last_bar=last_bar, beats_per_bar=beats_per_bar,
@@ -83,7 +93,7 @@ def main():
     parser.add_argument("--first-bar", type=int, help="First included bar (default: score first_bar or earliest bar)")
     parser.add_argument("--last-bar", type=int, help="Last included bar (default: latest bar)")
     parser.add_argument("--offset", type=float, default=0, help="Seconds before the first included bar")
-    parser.add_argument("--pulse", type=float, default=.09, help="Highlight duration in seconds")
+    parser.add_argument("--pulse", type=float, default=.09, help="Fallback highlight duration in seconds for entries without duration_beats")
     parser.add_argument("--include-percussion", action="store_true")
     parser.add_argument("--output", type=Path, required=True, help="Output .npy path; also writes a .json sidecar")
     args = parser.parse_args()

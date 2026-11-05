@@ -5,6 +5,8 @@ description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.3.1",
+    "librosa>=0.11,<0.12",
+    "piano-transcription-inference @ git+https://github.com/xavriley/piano_transcription_inference.git@7568dc7f78b625e40cf9776e2806d164006610e3",
     "numpy>=1.26,<2",
     "opencv-python>=4.10,<4.12",
     "torch>=2.7",
@@ -19,6 +21,9 @@ dependencies = [
 [tool.uv]
 package = true
 
+[project.optional-dependencies]
+audio = ["librosa>=0.11,<0.12"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -29,12 +34,18 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 markers = [
     "slow: end-to-end tests over local video fixtures",
 ]
 
 [project.scripts]
 string-lights = "string_lights.__main__:main"
+generate-transcription = "string_lights.transcription:main"
+refine-transcription = "string_lights.tab_refinement:main"
 
 [tool.uv.sources]
 sam2matting = { path = "vendor/sam2matting" }
+
+[tool.hatch.metadata]
+allow-direct-references = true

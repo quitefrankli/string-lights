@@ -1,0 +1,11 @@
+# Cupid string-order diagnosis
+
+The cached projected geometry at frame 150 places line 0 at physical low E and line 5 at physical high E (see benchmark tmp/order-check.png). `audio.get_strings_to_highlight` nevertheless converts transcription column s into line 5-s. A one-hot low-E column therefore lights high E. A six-column identity probe reproduces this deterministically.
+
+The pitch-aware generator uses tuning [40,45,50,55,59,64], assigning low-to-high columns correctly. The mismatch is at its interface with the current renderer. The tabs editor also previews column s on line 5-s, and its reverse-strings control changes label/export mapping. This makes visually compensated hand annotations plausible, but does not establish how the existing Cupid file was authored. A bare NPY stores no ordering metadata or edit history. Existing timing tests explicitly expect the historical reversed mapping.
+
+No global renderer/editor change was made: changing the convention immediately would change existing projects' renders. Cupid inputs remain untouched. The benchmark file pitch-aware-render-order.npy reverses the canonical generated columns purely as an adapter to the current renderer. It is NOT a low-to-high semantic transcription and must not become the source for musical analysis. Its corresponding six-string probe passes: each canonical string reaches the matching physical line after adaptation. Original pitch-aware-transcription.npy retains low-to-high order. Future permanent fix should make geometry order explicit and update editor/render mapping together, with migration/compatibility support for existing annotations.
+
+## Fixed
+
+The renderer now maps column s to projected line s. The editor preview uses the same direct semantic mapping, including when the explicit reverse-strings control is enabled. Regression tests exercise all six renderer columns and the editor's preview/export mapping with reversal on and off. Existing arrays were not migrated; arrays manually compensated for the old reversal may require an explicit reversal when reviewed. The temporary pitch-aware-render-order.npy adapter is obsolete after this fix; use canonical pitch-aware-transcription.npy. Previously exported MP4 comparisons retain the old rendering until regenerated.

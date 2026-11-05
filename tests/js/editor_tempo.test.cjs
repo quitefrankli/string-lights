@@ -65,11 +65,17 @@ run(`notes = [{string: 0, start: .1, end: .3, value: 1}];
   const moves = [];
   Object.assign(octx, {clearRect() {}, beginPath() {}, moveTo(x) {moves.push(x);}, lineTo() {}, stroke() {}});
 `);
+// Each canonical row previews on its corresponding physical projected string.
+for (let string = 0; string < 6; string++) {
+  run(`notes = [{string: ${string}, start: .1, end: .3, value: 1}]; moves.length = 0; drawOverlay();`);
+  assert.equal(run('moves[0]'), string);
+}
+run('notes = JSON.parse(beforeReverse);');
 elements.get('reverse-strings').listeners.change({target: {checked: true}});
 assert.equal(run('testLabels.map(label => label.textContent).join(",")'), 'E2,A2,D3,G3,B3,E4');
 assert.equal(run('JSON.stringify(notes)'), run('beforeReverse'));
 assert.equal(run('history.length'), run('beforeHistory'));
-assert.equal(run('moves[moves.length - 1]'), 0);
+assert.equal(run('moves[moves.length - 1]'), 5);
 assert.match(run('testMarkers[0].title'), /^E4 at /);
 elements.get('filename').value = 'clip';
 let saved;
@@ -82,7 +88,7 @@ elements.get('export-btn').listeners.click().then(() => {
   assert.equal(saved.frames[4][0], 0);
   elements.get('reverse-strings').listeners.change({target: {checked: false}});
   assert.equal(run('testLabels.map(label => label.textContent).join(",")'), 'E4,B3,G3,D3,A2,E2');
-  assert.equal(run('moves[moves.length - 1]'), 5);
+  assert.equal(run('moves[moves.length - 1]'), 0);
   assert.equal(run('JSON.stringify(notes)'), run('beforeReverse'));
   console.log('String reversal: labels, preview, export and unchanged notes passed.');
 }).catch(error => { console.error(error); process.exitCode = 1; });

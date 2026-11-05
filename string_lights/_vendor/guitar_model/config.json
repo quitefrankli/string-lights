@@ -1,0 +1,252 @@
+{
+  "project_name": "Automatic_Guitar_Transcription",
+  "experiment_name": "cascaded hcqt + mel",
+  "dataset": "GuitarSet",
+  "GuitarSet": {
+    "drive_data_path": "/content/drive/MyDrive/Automatic Guitar Transcription/feature_extraction/guitarset_enriched_npz/",
+    "local_data_path": "/content/local_guitarset_data/",
+    "feature_to_file_map": {
+      "hcqt": "hcqt.npy",
+      "mel": "mel.npy",
+      "power": "power.npy"
+    }
+  },
+  "feature_definitions": {
+    "cqt": {
+      "key": "cqt",
+      "in_channels": 1,
+      "num_freq": 144
+    },
+    "hcqt": {
+      "key": "hcqt",
+      "in_channels": 6,
+      "num_freq": 144
+    },
+    "mel": {
+      "key": "mel",
+      "in_channels": 1,
+      "num_freq": 256
+    },
+    "power": {
+      "key": "power",
+      "in_channels": 1,
+      "num_freq": 1
+    }
+  },
+  "data": {
+    "active_preparation_mode": "framify",
+    "framify_chunk_size": 500,
+    "framify_window_size": 19,
+    "augmentation": {
+      "enabled": false,
+      "freq_masking_param": 24,
+      "time_masking_param": 30
+    },
+    "active_features": {
+      "hcqt": true,
+      "mel": true,
+      "cqt": false,
+      "power": false
+    },
+    "target_keys": {
+      "tablature": true,
+      "hand_pos_target": true,
+      "activity_target": true,
+      "pitch_class_target": true,
+      "multipitch_target": true,
+      "onset_target": false
+    },
+    "batch_size": 4,
+    "num_workers": 2,
+    "random_state": 42,
+    "hop_length": 512,
+    "sample_rate": 22050
+  },
+  "model": {
+    "name": "cnn_mtl",
+    "params": {
+      "num_classes": 21,
+      "use_projection_layer": true,
+      "projection_output_size": 256,
+      "backbone": {
+        "type": "MultiScaleSE",
+        "kernels": [
+          [
+            3,
+            3
+          ],
+          [
+            5,
+            5
+          ],
+          [
+            1,
+            9
+          ]
+        ],
+        "filters": [
+          32,
+          64,
+          128
+        ],
+        "use_se_block": true,
+        "dropout": 0.25
+      },
+      "heads": {
+        "tablature": {
+          "enabled": true
+        },
+        "hand_position": {
+          "enabled": true,
+          "num_classes": 5
+        },
+        "string_activity": {
+          "enabled": true
+        },
+        "pitch_class": {
+          "enabled": true,
+          "num_classes": 12
+        },
+        "multipitch": {
+          "enabled": true
+        },
+        "onset": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  "instrument": {
+    "tuning": [
+      40,
+      45,
+      50,
+      55,
+      59,
+      64
+    ],
+    "min_midi": 40,
+    "max_midi": 88,
+    "num_frets": 19,
+    "num_strings": 6,
+    "silence_class": 20
+  },
+  "loss": {
+    "weighting_strategy": "uncertainty",
+    "grad_cos_sim": {
+      "enabled": true,
+      "threshold": 0.0
+    },
+    "tablature_loss": {
+      "type": "FocalLoss",
+      "params": {
+        "gamma": 2.0,
+        "ignore_index": -1
+      }
+    },
+    "hand_position_loss": {
+      "enabled": true,
+      "type": "CrossEntropyLoss",
+      "weight": 0.4
+    },
+    "string_activity_loss": {
+      "enabled": true,
+      "type": "BCEWithLogitsLoss",
+      "weight": 0.4
+    },
+    "pitch_class_loss": {
+      "enabled": true,
+      "type": "BCEWithLogitsLoss",
+      "weight": 0.4
+    },
+    "multipitch_loss": {
+      "enabled": true,
+      "type": "BCEWithLogitsLoss",
+      "weight": 0.4
+    },
+    "onset_loss": {
+      "enabled": false,
+      "type": "BCEWithLogitsLoss",
+      "weight": 0.4
+    }
+  },
+  "training": {
+    "optimizer": {
+      "active_optimizer": "AdamW",
+      "configurations": {
+        "Adam": {
+          "differential_lr": true,
+          "params": {
+            "backbone_lr": 0.0001,
+            "head_lr": 0.0005,
+            "loss_lr": 0.001,
+            "weight_decay": 0.0
+          }
+        },
+        "AdamW": {
+          "differential_lr": true,
+          "params": {
+            "backbone_lr": 0.0003,
+            "head_lr": 0.0006,
+            "loss_lr": 0.001,
+            "weight_decay": 0.01
+          }
+        }
+      }
+    },
+    "scheduler": {
+      "active_scheduler": "ReduceLROnPlateau",
+      "configurations": {
+        "ReduceLROnPlateau": {
+          "params": {
+            "monitor": "val_tab_f1",
+            "mode": "max",
+            "factor": 0.5,
+            "patience": 6,
+            "min_lr": 1e-06
+          }
+        },
+        "StepLR": {
+          "params": {
+            "step_size": 10,
+            "gamma": 0.5
+          }
+        }
+      }
+    },
+    "epochs": 200,
+    "device": "cuda",
+    "use_mixed_precision": true,
+    "early_stopping": {
+      "enabled": true,
+      "monitor": "val_tab_f1",
+      "patience": 12,
+      "min_delta": 0.0001,
+      "mode": "max"
+    }
+  },
+  "post_processing": {
+    "min_duration_frames": 0,
+    "prediction_threshold": 0.3
+  },
+  "metrics": {
+    "include_silence": false
+  },
+  "logging_and_checkpointing": {
+    "use_tensorboard": true,
+    "resume_from_checkpoint": null,
+    "log_epoch_summary": true,
+    "log_levels": {
+      "__main__": "INFO",
+      "src.trainer": "INFO",
+      "src.evaluate": "INFO",
+      "src.data_loader": "INFO",
+      "src.models.cnn_mtl": "DEBUG",
+      "src.utils.losses": "INFO",
+      "src.utils.metrics": "INFO",
+      "src.utils.agt_tools": "INFO",
+      "src.utils.experiment": "INFO",
+      "src.utils.analyze_errors": "INFO"
+    }
+  }
+}

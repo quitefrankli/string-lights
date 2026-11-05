@@ -490,7 +490,7 @@ function drawOverlay() {
   octx.lineCap = 'round';
   for (let si = 0; si < 6; si++) {
     if (!isLit(si, t)) continue;
-    const [x0, y0, x1, y1] = lines[STRINGS.length - 1 - assignedString(si)];
+    const [x0, y0, x1, y1] = lines[assignedString(si)];
     octx.beginPath();
     octx.moveTo(x0, y0);
     octx.lineTo(x1, y1);
