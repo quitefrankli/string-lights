@@ -76,8 +76,19 @@ Render with the projection and mask caches:
 uv run string-lights render-strings cupid --frames 500
 ```
 
-`render-strings` always reads existing planar projection caches. Masks are loaded
-from cache unless `--disable-masking` is supplied. If a mask cache ends before
+Rendering uses four frame-compositing threads by default. Use `--workers 1`
+for serial rendering or `--workers N` to choose another count. Frames are
+encoded in order, with at most twice the worker count queued. Fade timing,
+masking and encoding settings are preserved. String-core compositing and hand
+mask blending are limited to the region affected by the lights. OpenCV's internal processing
+threads are limited while the worker pool runs to avoid nested thread pools.
+The debug-mask preview remains serial.
+
+`render-strings` always reads existing planar projection caches. Masks are streamed
+sequentially from the compressed cache unless `--disable-masking` is supplied.
+Only the current mask and a small decompression buffer are held in memory;
+short previews stop reading masks at their frame limit. No expanded mask file is
+written to disk. If a mask cache ends before
 the video, remaining frames render without hand masking. If planar projections
 end early, remaining frames hold the last valid cached projection. Both fallbacks
 emit warnings and leave caches unchanged. Missing caches and projections with no
@@ -223,7 +234,9 @@ capo conflicts are also rejected. By default, at least half the audio notes must
 align; inspect the extraction before lowering `--min-coverage`.
 
 All PDF pages are read by default. Use `--pages 1`, `--first-bar 2`, `--last-bar 8`
-to limit extraction. Extraction explicitly uses `gpt-6.1-sol` with `low` reasoning
+to limit extraction. For a score that only covers the opening passage, use
+`--end-time SECONDS` to bound audio alignment and preserve later note assignments.
+Coverage is measured over notes within that time range. Extraction explicitly uses `gpt-6.1-sol` with `low` reasoning
 effort, independent of local Codex defaults; `--codex-model` overrides the model.
 Extracted `tabs.json`,
 page images, prompt/schema and Codex log are cached under the project's

@@ -103,9 +103,10 @@ def main(ctx, projects_dir: Path) -> None:
 @click.option("--frames", type=int, default=None, help="Max number of frames to process.")
 @click.option("--disable-masking", is_flag=True, default=False, help="Skip hand masking (faster for dev testing).")
 @click.option("--random-strings", is_flag=True, default=False, help="Generate random string highlights instead of reading from .npy.")
+@click.option("--workers", type=click.IntRange(min=1), default=4, show_default=True, help="Frame compositing threads; use 1 for serial rendering.")
 @click.option("--debug-masks", is_flag=True, default=False, help="Write debug video with soft hand-mask overlay; skips normal output.")
 @path_options(output="render", projections="projections", masks="masks", mask_metadata="mask_metadata", transcription="transcription")
-def run(filename: str, frames: int | None, disable_masking: bool, random_strings: bool, debug_masks: bool) -> None:
+def run(filename: str, frames: int | None, disable_masking: bool, random_strings: bool, debug_masks: bool, workers: int) -> None:
     input_path = _resolve_video(filename)
 
     output_path = paths.artifact_path(input_path, "render")
@@ -119,6 +120,7 @@ def run(filename: str, frames: int | None, disable_masking: bool, random_strings
             disable_masking=disable_masking,
             random_strings=random_strings,
             debug_masks=debug_masks,
+            workers=workers,
         )
     except (FileNotFoundError, ValueError) as error:
         raise click.ClickException(str(error)) from error

@@ -12,9 +12,10 @@ from tqdm import tqdm
 
 from .config import MASK_MODEL_ID, MASK_CHECKPOINT, MASK_ENCODING
 from .masking import video_masks, read_seed, seed_mask_path, blend_mask, mask_overlay
+from .mask_cache import MaskCache
 from .mask_stabilization import stabilize_video_masks
 from .audio import get_strings_to_highlight, get_random_strings
-from .strings import draw_projected_strings_frame
+from .frame_rendering import composite_frames
 
 from .paths import artifact_path, project_dir, artifact_overrides
 
@@ -182,31 +183,39 @@ def save_masks(stem: str, masks: np.ndarray, indices: np.ndarray, meta: dict) ->
     return npz_path
 
 
-def load_masks(stem: str) -> tuple[np.ndarray, np.ndarray, dict]:
+def load_masks(stem: str) -> tuple[MaskCache, np.ndarray, dict]:
     with np.load(masks_meta_path(stem)) as data:
         if "encoding" not in data or data["encoding"].item() != MASK_ENCODING:
             raise ValueError(f"Old binary mask cache for {stem}; regenerate with string-lights generate-masks {stem} --force")
         meta = {key: data[key].item() for key in data.files if key != "indices"}
         indices = data["indices"].copy()
-    with np.load(masks_path(stem)) as data:
-        masks = data["masks"]
+    masks = MaskCache(masks_path(stem))
+    if (indices.ndim != 1 or not np.issubdtype(indices.dtype, np.integer)
+            or len(indices) and (indices[0] != 0 or np.any(indices[1:] <= indices[:-1])
+                                 or indices[-1] >= meta["total"])):
+        raise ValueError("Mask cache indices must start at zero and increase within coverage")
+    if masks.shape != (len(indices), meta["h"], meta["w"]):
+        raise ValueError("Mask cache shape does not match metadata")
     return masks, indices, meta
 
 
 def masks_iter(
-    masks: np.ndarray, indices: np.ndarray, total: int, *, valid_frames: int | None = None,
+    masks: np.ndarray | MaskCache, indices: np.ndarray, total: int, *, valid_frames: int | None = None,
 ) -> Iterator[np.ndarray]:
-    """Hold sampled masks within cache coverage; yield empty masks beyond it."""
-    K = len(indices)
-    cur = 0
-    empty = np.zeros(masks.shape[1:], dtype=masks.dtype)
-    for i in range(total):
-        if not K or (valid_frames is not None and i >= valid_frames):
-            yield empty
-            continue
-        while cur + 1 < K and indices[cur + 1] <= i:
-            cur += 1
-        yield masks[cur]
+    """Stream sampled masks, holding each only within recorded cache coverage."""
+    saved = masks.frames() if isinstance(masks, MaskCache) else (mask for mask in masks)
+    empty = np.zeros(masks.shape[1:], dtype=np.uint8)
+    current = empty
+    next_sample = 0
+    with closing(saved):
+        for i in range(total):
+            if not len(indices) or (valid_frames is not None and i >= valid_frames):
+                yield empty
+                continue
+            while next_sample < len(indices) and indices[next_sample] <= i:
+                current = next(saved)
+                next_sample += 1
+            yield current
 
 
 # ── Render stage ───────────────────────────────────────────────────────────
@@ -217,22 +226,22 @@ def render_video(
     projections: np.ndarray,
     strings: list[list[int]],
     meta: dict,
-    masks: tuple[np.ndarray, np.ndarray] | None = None,
+    masks: tuple[np.ndarray | MaskCache, np.ndarray] | None = None,
     fast: bool = False,
     include_audio: bool = True,
     truncate_audio: bool = False,
     mask_frames: int | None = None,
+    workers: int = 1,
 ) -> None:
     w, h, fps, total = meta["w"], meta["h"], meta["fps"], meta["total"]
     cap = cv2.VideoCapture(input_path)
-    frame_stream = _stream_frames(cap, total)
+    render_count = min(total, len(projections), len(strings))
+    frame_stream = _stream_frames(cap, render_count)
     if masks is not None:
-        mask_stream = masks_iter(masks[0], masks[1], total, valid_frames=mask_frames)
+        mask_stream = masks_iter(masks[0], masks[1], render_count, valid_frames=mask_frames)
     else:
         empty = np.zeros((h, w), dtype=np.uint8)
         mask_stream = (empty for _ in range(total))
-
-    last_active: dict[int, int] = {}
 
     encode = ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
     if fast:
@@ -257,28 +266,29 @@ def render_video(
         target=lambda: stderr_chunks.append(proc.stderr.read()), daemon=True
     )
     stderr_thread.start()
-    render_count = min(total, len(projections), len(strings))
     pbar = tqdm(total=render_count, desc="render", unit="f")
+    composited = composite_frames(frame_stream, mask_stream, projections, strings, fps, workers)
     try:
-        for i, (frame, mask) in enumerate(zip(frame_stream, mask_stream)):
-            if i >= render_count:
-                break
-            original = frame.copy() if mask.any() else None
-            draw_projected_strings_frame(
-                frame, i, projections[i], strings[i], last_active, fps
-            )
-            if original is not None:
-                frame = blend_mask(original, frame, mask)
+        for frame in composited:
             proc.stdin.write(np.ascontiguousarray(frame).tobytes())
             pbar.update(1)
-        proc.stdin.close()
     except BrokenPipeError:
         pass
+    except BaseException:
+        proc.terminate()
+        raise
     finally:
         pbar.close()
-    cap.release()
-    rc = proc.wait()
-    stderr_thread.join()
+        composited.close()
+        mask_stream.close()
+        cap.release()
+        try:
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        rc = proc.wait()
+        stderr_thread.join()
+        proc.stderr.close()
     stderr = b"".join(stderr_chunks).decode(errors="replace")
     if rc != 0:
         raise RuntimeError(f"ffmpeg failed:\n{stderr}")
@@ -293,6 +303,7 @@ def process_video(
     disable_masking: bool = False,
     random_strings: bool = False,
     debug_masks: bool = False,
+    workers: int = 4,
 ) -> None:
     stem = str(project_dir(input_path))
 
@@ -327,9 +338,10 @@ def process_video(
         try:
             cap2 = cv2.VideoCapture(input_path)
             try:
-                for frame, mask in zip(_stream_frames(cap2, total), masks_iter(masks_arr, indices, total, valid_frames=mask_frames)):
-                    vis = frame.copy()
-                    debug_writer.write(mask_overlay(vis, mask))
+                with closing(masks_iter(masks_arr, indices, total, valid_frames=mask_frames)) as mask_stream:
+                    for frame, mask in zip(_stream_frames(cap2, total), mask_stream):
+                        vis = frame.copy()
+                        debug_writer.write(mask_overlay(vis, mask))
             finally:
                 cap2.release()
         finally:
@@ -381,6 +393,7 @@ def process_video(
         masks=masks_data,
         mask_frames=mask_frames,
         truncate_audio=frames is not None,
+        workers=workers,
     )
     observed = int(np.isfinite(projections).all(axis=(1, 2, 3)).sum())
     print(

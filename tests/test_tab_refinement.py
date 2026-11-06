@@ -97,3 +97,27 @@ def test_extraction_cache_avoids_codex_inference(tmp_path,monkeypatch):
     (tmp_path/'work'/'extraction.json').write_text(json.dumps(manifest))
     module.extract_tabs(pdf,tmp_path/'work',pages=[1],first_bar=2,last_bar=2)
     assert sum(cmd[0]=='codex' for cmd in calls)==2
+
+
+def test_cli_end_time_preserves_later_events(tmp_path, monkeypatch):
+    import json
+    from string_lights import tab_refinement as module
+    from string_lights.transcription import write_outputs
+    source = tmp_path / 'source.npy'
+    output = tmp_path / 'refined.npy'
+    events = [dict(start=.1, end=.5, pitch=66, string=4, fret=5),
+              dict(start=1.5, end=1.8, pitch=66, string=4, fret=5)]
+    write_outputs(source, module.export(events, 2., .09), dict(
+        events=events, capo=2, tuning_midi=[40,45,50,55,59,64],
+        duration_seconds=2., pulse_seconds=.09, column_order='low_to_high'))
+    monkeypatch.setattr(module, 'extract_tabs', lambda *a, **kw: (score([[(5,0)]]), {}))
+    module.main(['song', '--tabs', str(tmp_path/'tabs.pdf'),
+                 '--transcription', str(source), '--output', str(output),
+                 '--end-time', '1', '--min-coverage', '1'])
+    metadata = json.loads(output.with_suffix('.json').read_text())
+    assert metadata['events'][0]['string'] == 5
+    assert metadata['events'][1] == events[1]
+    np.testing.assert_array_equal(np.load(output)[44:], np.load(source)[44:])
+    assert metadata['refinement']['alignment']['eligible_notes'] == 1
+    assert metadata['refinement']['alignment']['outside_range_notes'] == 1
+    assert metadata['refinement']['end_time_seconds'] == 1

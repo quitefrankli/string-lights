@@ -72,3 +72,35 @@ def test_projected_renderer_preserves_active_fade_and_expiry_behavior() -> None:
     assert np.count_nonzero(active) > 0
     assert 0 < int(fading.sum()) < int(active.sum())
     assert np.count_nonzero(expired) == 0
+
+
+def test_hand_mask_and_core_blending_are_limited_to_effect_region(monkeypatch):
+    from string_lights import strings
+    from string_lights.masking import blend_mask
+    rng = np.random.default_rng(8)
+    original = rng.integers(0,256,(600,800,3),dtype=np.uint8)
+    mask = rng.integers(0,256,(600,800),dtype=np.uint8)
+    lines = np.array([[[300,260+s*5],[450,270+s*5]] for s in range(6)],float)
+    unmasked = original.copy()
+    strings.draw_projected_strings_frame(unmasked,2,lines,[2],{0:0},30.)
+    expected = blend_mask(original,unmasked,mask)
+    regions = []
+    def blend(original_roi, effect_roi, mask_roi):
+        regions.append(original_roi.shape)
+        return blend_mask(original_roi,effect_roi,mask_roi)
+    monkeypatch.setattr(strings,'blend_mask',blend)
+    result = original.copy()
+    strings.draw_projected_strings_frame(result,2,lines,[2],{0:0},30.,mask=mask)
+    np.testing.assert_array_equal(result,expected)
+    assert len(regions)==1
+    assert regions[0][0]<600 and regions[0][1]<800
+    np.testing.assert_array_equal(result[:150],original[:150])
+
+
+def test_no_visible_strings_skips_hand_blending(monkeypatch):
+    from string_lights import strings
+    def unexpected(*args):raise AssertionError('Nothing to composite')
+    monkeypatch.setattr(strings,'blend_mask',unexpected)
+    frame=np.full((240,256,3),123,np.uint8)
+    strings.draw_projected_strings_frame(frame,30,_separated_lines(),[],{},30.,mask=np.full((240,256),255,np.uint8))
+    assert (frame==123).all()

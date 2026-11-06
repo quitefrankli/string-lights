@@ -76,7 +76,7 @@ def test_custom_mask_sidecar_round_trip_and_force(tmp_path, monkeypatch):
         actual, indices, meta = pipeline.load_masks('clip')
     finally:
         paths.artifact_overrides.reset(token)
-    np.testing.assert_array_equal(actual, masks)
+    np.testing.assert_array_equal(np.stack(list(actual.frames())), masks)
     assert meta == metadata
     refused = runner.invoke(main, arguments)
     assert refused.exit_code != 0

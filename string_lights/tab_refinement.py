@@ -218,6 +218,7 @@ def main(argv=None, *, prog=None):
     parser.add_argument('--pages',nargs='+',type=int,default=None,help='PDF pages to read (default: all)')
     parser.add_argument('--first-bar',type=int)
     parser.add_argument('--last-bar',type=int)
+    parser.add_argument('--end-time',type=float,help='Refine only notes starting before this video time in seconds; preserve later notes')
     parser.add_argument('--codex-model', default=DEFAULT_CODEX_MODEL,
                         help=f'PDF extraction model (default: {DEFAULT_CODEX_MODEL}; reasoning effort: low)')
     parser.add_argument('--timeout',type=float,default=300)
@@ -229,7 +230,9 @@ def main(argv=None, *, prog=None):
     try:
         if (not np.isfinite(args.min_coverage) or not 0 <= args.min_coverage <= 1
                 or args.pages is not None and any(p<1 for p in args.pages) or args.timeout<=0
-                or not np.isfinite(args.timeout) or any(b is not None and b<1 for b in [args.first_bar,args.last_bar])
+                or not np.isfinite(args.timeout)
+                or args.end_time is not None and (not np.isfinite(args.end_time) or args.end_time <= 0)
+                or any(b is not None and b<1 for b in [args.first_bar,args.last_bar])
                 or args.first_bar and args.last_bar and args.first_bar>args.last_bar):
             raise ValueError('Use positive pages, bars and timeout with ordered bar range')
         source=args.transcription or paths.project_dir(args.input)/'transcription.npy'
@@ -246,15 +249,27 @@ def main(argv=None, *, prog=None):
         if metadata.get('column_order')!='low_to_high':raise ValueError('Expected low-to-high string order')
         score,provenance=extract_tabs(args.tabs,work,pages=args.pages,first_bar=args.first_bar,
                                      last_bar=args.last_bar,model=args.codex_model,timeout=args.timeout)
-        refined,report=align(metadata['events'],score,metadata['tuning_midi'],metadata['capo'])
+        selected = [i for i, event in enumerate(metadata['events'])
+                    if args.end_time is None or event['start'] < args.end_time]
+        eligible = [metadata['events'][i] for i in selected]
+        aligned,report=align(eligible,score,metadata['tuning_midi'],metadata['capo'])
+        refined = [dict(event) for event in metadata['events']]
+        for index, event in zip(selected, aligned):
+            refined[index] = event
+        for match in report['matches']:
+            match['event_index'] = selected[match['event_index']]
+        report['unresolved_event_indices'] = [selected[i] for i in report['unresolved_event_indices']]
+        report['eligible_notes'] = len(selected)
+        report['outside_range_notes'] = len(refined) - len(selected)
         if not report['matched_notes']:raise ValueError('No pitch matches found; outputs were not changed')
-        if report['matched_notes'] / len(metadata['events']) < args.min_coverage:
+        if report['matched_notes'] / len(eligible) < args.min_coverage:
             raise ValueError('Too few notes aligned; inspect the extracted tabs and bar range, or explicitly lower --min-coverage')
         frames=export(refined,metadata['duration_seconds'],metadata['pulse_seconds'])
         updated=dict(metadata,events=refined,unassigned_count=sum(e['string'] is None for e in refined),
                      refined_at=datetime.now(timezone.utc).isoformat(),
                      refinement=dict(pdf=str(args.tabs.resolve()),extraction=provenance,alignment=report,
                                      source_array_sha256=sha256(source),issues=score['issues'],min_coverage=args.min_coverage,
+                                     end_time_seconds=args.end_time,
                                      extracted_score=score,
                                      alignment_settings=dict(version=1,group_window_seconds=.08,
                                                              skip_audio_cost=1.05,skip_tab_cost=.65),

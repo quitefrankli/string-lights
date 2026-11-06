@@ -57,7 +57,7 @@ def test_mask_cache_sampling_and_incomplete_video(tmp_path, monkeypatch, returne
     assert not masks.any()
     pipeline.save_masks("clip", masks, indices, meta)
     cached, cached_indices, cached_meta = pipeline.load_masks("clip")
-    np.testing.assert_array_equal(cached, masks)
+    np.testing.assert_array_equal(np.stack(list(cached.frames())), masks)
     np.testing.assert_array_equal(cached_indices, indices)
     assert cached_meta["total"] == 5
     with np.load(pipeline.masks_meta_path("clip")) as metadata:

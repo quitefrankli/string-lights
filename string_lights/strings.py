@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 
 from .config import NUM_STRINGS, STRING_COLOR, STRING_CORE_COLOR, STRING_ALPHA, FADE_DURATION
+from .masking import blend_mask
 
 def draw_projected_strings_frame(
     frame: np.ndarray,
@@ -11,6 +12,7 @@ def draw_projected_strings_frame(
     last_active: dict[int, int],
     fps: float,
     fade: str = "exponential",
+    mask: np.ndarray | None = None,
 ) -> None:
     """Draw already-projected string lines, mutating last_active in place."""
     lines = np.asarray(projected_lines, dtype=np.float64)
@@ -66,6 +68,9 @@ def draw_projected_strings_frame(
     if x1 <= x0 or y1 <= y0:
         return
     rh, rw = y1 - y0, x1 - x0
+    roi = frame[y0:y1, x0:x1]
+    mask_roi = mask[y0:y1, x0:x1] if mask is not None else None
+    original = roi.copy() if mask_roi is not None and mask_roi.any() else None
 
     outer_bloom = np.zeros((rh, rw, 3), dtype=np.uint8)
     inner_glow  = np.zeros((rh, rw, 3), dtype=np.uint8)
@@ -79,7 +84,6 @@ def draw_projected_strings_frame(
     outer_bloom = cv2.GaussianBlur(outer_bloom, (0, 0), sigmaX=18)
     inner_glow  = cv2.GaussianBlur(inner_glow,  (0, 0), sigmaX=5)
 
-    roi = frame[y0:y1, x0:x1]
     scaled_outer = cv2.multiply(outer_bloom, np.array([0.25, 0.25, 0.25, 0], dtype=np.float64))
     scaled_inner = cv2.multiply(inner_glow,  np.array([0.7,  0.7,  0.7,  0], dtype=np.float64))
     cv2.add(roi, scaled_outer.astype(np.uint8), dst=roi)
@@ -89,7 +93,11 @@ def draw_projected_strings_frame(
     for a, b, alpha in endpoints:
         by_alpha.setdefault(round(alpha, 4), []).append((a, b))
     for alpha, lines in by_alpha.items():
-        core = frame.copy()
+        core = roi.copy()
         for a, b in lines:
-            cv2.line(core, a, b, STRING_CORE_COLOR, 2, cv2.LINE_AA)
-        cv2.addWeighted(core, alpha, frame, 1 - alpha, 0, frame)
+            cv2.line(core, (a[0] - x0, a[1] - y0),
+                     (b[0] - x0, b[1] - y0), STRING_CORE_COLOR, 2, cv2.LINE_AA)
+        cv2.addWeighted(core, alpha, roi, 1 - alpha, 0, roi)
+
+    if original is not None:
+        roi[:] = blend_mask(original, roi, mask_roi)
