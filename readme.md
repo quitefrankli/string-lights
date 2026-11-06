@@ -114,7 +114,7 @@ For variable string-light hold lengths, see the
 
 ### Lyrics export
 
-Launch the lyrics editor with `uv run string-lights lyrics-editor cupid` (or an explicit video path). It loads and saves the project’s `lyrics.json` by default; use `--lyrics /path/to/lyrics.json` to override it. Input files are selected through the CLI in both editors.
+Launch the lyrics editor with `uv run string-lights lyrics-editor cupid` (or an explicit video path). A project name uses `renders/strings.mp4` for preview and export when available, falling back to the project source video. An explicit video path uses that file. It loads and saves the project’s `lyrics.json` by default; use `--lyrics /path/to/lyrics.json` to override it. Input files are selected through the CLI in both editors.
 
 In the lyrics editor, click **Export** to choose a layout:
 

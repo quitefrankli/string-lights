@@ -23,6 +23,10 @@ def _resolve_input(stem: str) -> Path | None:
 
 
 def _base_video(stem: str) -> Path | None:
+    if not Path(stem).is_file():
+        rendered = artifact_path(stem, "render")
+        if rendered.is_file():
+            return rendered
     return _resolve_input(stem)
 
 
@@ -124,7 +128,10 @@ def create_lyrics_app(filename: str | None = None) -> Flask:
 
     app = Flask(__name__)
 
-    source = resolve_video(filename).resolve() if filename is not None else None
+    source = _base_video(filename) if filename is not None else None
+    if filename is not None and source is None:
+        raise FileNotFoundError(f"No video found for '{filename}'")
+    source = source.resolve() if source is not None else None
     stem_name = paths.project_dir(source).name if source is not None else None
     directory = paths.project_dir(source).resolve() if source is not None else None
     overrides = paths.artifact_overrides.get().copy()
@@ -161,7 +168,7 @@ def create_lyrics_app(filename: str | None = None) -> Flask:
     def video(stem):
         from .editor import _browser_video
 
-        p = source if source is not None else _resolve_input(stem)
+        p = source if source is not None else _base_video(stem)
         if p is None:
             return "Not found", 404
         p = _browser_video(p)

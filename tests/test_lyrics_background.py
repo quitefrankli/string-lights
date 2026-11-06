@@ -39,6 +39,15 @@ def test_background_can_be_disabled_and_fades_with_text():
     np.testing.assert_array_equal(fading, original)
 
 
+def test_japanese_font_uses_distinct_glyphs_and_keeps_latin_font():
+    latin = lyrics._font(32)
+    japanese = lyrics._font(32, "いつも")
+    if not any(lyrics.Path(path).exists() for path in lyrics._JAPANESE_FONT_PATHS):
+        pytest.skip("Japanese font is not installed")
+    assert bytes(japanese.getmask("い")) != bytes(japanese.getmask("つ"))
+    assert lyrics._font(32, "English lyrics") is latin
+
+
 @pytest.mark.parametrize("x", [0, 1])
 def test_background_clips_at_canvas_edges(x):
     frame = np.full((100, 160, 3), 255, dtype=np.uint8)

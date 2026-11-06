@@ -65,3 +65,41 @@ def test_lyrics_cli_requires_input_and_passes_overrides(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert calls[0] == (str(source), {'lyrics': custom})
     assert calls[1]['port'] == 8081
+
+
+def test_lyrics_project_uses_strings_render_for_preview_and_export(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, 'PROJECTS_DIR', tmp_path)
+    directory = tmp_path / 'gunjou_planar'
+    directory.mkdir()
+    source = directory / 'source.mov'
+    source.write_bytes(b'original footage')
+    rendered = directory / 'renders' / 'strings.mp4'
+    rendered.parent.mkdir()
+    rendered.write_bytes(b'string highlights')
+    monkeypatch.setattr('string_lights.editor._browser_video', lambda p: p)
+    client = lyrics_editor.create_lyrics_app('gunjou_planar').test_client()
+    response = client.get('/video/gunjou_planar')
+    assert response.data == b'string highlights'
+    response.close()
+    assert lyrics_editor._base_video('gunjou_planar') == rendered
+    assert lyrics_editor._base_video(str(source)) == source
+    threads, inputs = [], []
+    monkeypatch.setattr(lyrics_editor, '_render', {'state': 'idle'})
+    monkeypatch.setattr(lyrics_editor.threading, 'Thread', lambda **kw:
+                        SimpleNamespace(start=lambda: threads.append(kw)))
+    monkeypatch.setattr(lyrics_editor, '_do_render', lambda *args: inputs.append(args[0]))
+    assert client.post('/render/gunjou_planar', json={}).status_code == 200
+    threads[0]['target'](*threads[0]['args'])
+    assert inputs == [str(rendered.resolve())]
+    rendered.unlink()
+    assert lyrics_editor._base_video('gunjou_planar') == source
+
+
+def test_lyrics_cli_keeps_project_name_for_render_selection(monkeypatch):
+    calls = []
+    monkeypatch.setattr('webbrowser.open', lambda url: None)
+    monkeypatch.setattr(lyrics_editor, 'create_lyrics_app', lambda filename:
+                        calls.append(filename) or SimpleNamespace(run=lambda **kw: None))
+    result = CliRunner().invoke(main, ['lyrics-editor', 'gunjou_planar'])
+    assert result.exit_code == 0, result.output
+    assert calls == ['gunjou_planar']

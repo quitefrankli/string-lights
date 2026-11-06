@@ -127,7 +127,7 @@ def test_editor_rejects_invalid_transcription_without_loading(tmp_path, monkeypa
 
 def test_project_editor_scopes_listing_loading_and_saving(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    for name in ('cupid', 'gunjo'):
+    for name in ('cupid', 'gunjou'):
         directory = tmp_path / 'data/projects' / name
         directory.mkdir(parents=True)
         (directory / 'source.mp4').touch()
@@ -135,16 +135,16 @@ def test_project_editor_scopes_listing_loading_and_saving(tmp_path, monkeypatch)
     client = create_app('cupid').test_client()
     assert client.get('/list').status_code == 404
     assert client.get('/load/cupid').status_code == 200
-    assert client.get('/load/gunjo').status_code == 404
-    assert client.get('/video/gunjo').status_code == 404
-    assert client.get('/strings/gunjo').status_code == 404
-    assert client.post('/export', json={'filename': 'gunjo', 'frames': [[1] * 6],
+    assert client.get('/load/gunjou').status_code == 404
+    assert client.get('/video/gunjou').status_code == 404
+    assert client.get('/strings/gunjou').status_code == 404
+    assert client.post('/export', json={'filename': 'gunjou', 'frames': [[1] * 6],
                                        'overwrite': True}).status_code == 400
     response = client.post('/export', json={'filename': 'cupid', 'frames': [[1] * 6],
                                            'overwrite': True})
     assert response.status_code == 200
     np.testing.assert_array_equal(np.load('data/projects/cupid/transcription.npy'), [[1] * 6])
-    np.testing.assert_array_equal(np.load('data/projects/gunjo/transcription.npy'), np.zeros((2, 6)))
+    np.testing.assert_array_equal(np.load('data/projects/gunjou/transcription.npy'), np.zeros((2, 6)))
     from string_lights import paths
     assert paths.project_override.get() is None
 

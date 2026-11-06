@@ -176,7 +176,7 @@ def lyrics_editor(filename: str, port: int) -> None:
     import webbrowser
     from .lyrics_editor import create_lyrics_app
 
-    app = create_lyrics_app(str(_resolve_video(filename)))
+    app = create_lyrics_app(filename)
     webbrowser.open(f"http://localhost:{port}")
     app.run(host="localhost", port=port)
 
