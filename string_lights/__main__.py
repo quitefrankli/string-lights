@@ -99,7 +99,7 @@ def main(ctx, projects_dir: Path) -> None:
 
 
 @main.command("render-strings")
-@click.argument("filename")
+@click.argument("filename", metavar="PROJECT_NAME")
 @click.option("--frames", type=int, default=None, help="Max number of frames to process.")
 @click.option("--disable-masking", is_flag=True, default=False, help="Skip hand masking (faster for dev testing).")
 @click.option("--random-strings", is_flag=True, default=False, help="Generate random string highlights instead of reading from .npy.")
@@ -127,7 +127,7 @@ def run(filename: str, frames: int | None, disable_masking: bool, random_strings
 
 
 @main.command("generate-masks")
-@click.argument("filename")
+@click.argument("filename", metavar="PROJECT_NAME")
 @click.option("--frames", type=click.IntRange(min=1), help="Max number of frames to process.")
 @click.option("--frame-skip", type=click.IntRange(min=1), default=1, show_default=True, help="Cache a mask every N frames; SAM2Matting still tracks every frame.")
 @click.option("--force", is_flag=True, help="Overwrite an existing mask cache.")
@@ -149,15 +149,16 @@ def masks(filename: str, frames: int | None, frame_skip: int, force: bool, seed_
 
 
 @main.command("tabs-editor")
-@click.argument("project")
+@click.argument("project", metavar="PROJECT_NAME")
 @click.option("--port", type=int, default=8080, show_default=True)
+@path_options(transcription="transcription")
 def tabs_editor(project: str, port: int) -> None:
     import webbrowser
     from .editor import create_app
 
     import os
     if project in (".", "..") or Path(project).name != project or "\\" in project:
-        raise click.BadParameter("Expected a project name.", param_hint="project")
+        raise click.BadParameter("Expected a project name.", param_hint="PROJECT_NAME")
     try:
         app = create_app(project)
     except FileNotFoundError as error:
@@ -168,17 +169,20 @@ def tabs_editor(project: str, port: int) -> None:
 
 
 @main.command("lyrics-editor")
+@click.argument("filename", metavar="PROJECT_NAME")
 @click.option("--port", type=int, default=8081, show_default=True)
-def lyrics_editor(port: int) -> None:
+@path_options(lyrics="lyrics", output="lyrics_render")
+def lyrics_editor(filename: str, port: int) -> None:
     import webbrowser
     from .lyrics_editor import create_lyrics_app
 
+    app = create_lyrics_app(str(_resolve_video(filename)))
     webbrowser.open(f"http://localhost:{port}")
-    create_lyrics_app().run(host="localhost", port=port)
+    app.run(host="localhost", port=port)
 
 
 @main.command("tune-guitar-plane")
-@click.argument("filename")
+@click.argument("filename", metavar="PROJECT_NAME")
 @path_options(annotation="annotation")
 def tune(filename: str) -> None:
     from .planar_tuner import run_browser_tuner
@@ -197,7 +201,7 @@ def tune(filename: str) -> None:
 
 
 @main.command("mask-edit")
-@click.argument("filename")
+@click.argument("filename", metavar="PROJECT_NAME")
 @path_options(masks="masks", mask_metadata="mask_metadata", output="mask_output")
 def mask_edit(filename: str) -> None:
     from .mask_editor import run_mask_editor
@@ -206,7 +210,7 @@ def mask_edit(filename: str) -> None:
 
 
 @main.command("planar-profile")
-@click.argument("filename")
+@click.argument("filename", metavar="PROJECT_NAME")
 @click.argument(
     "annotation",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
@@ -238,7 +242,7 @@ def planar_profile(
 
 
 @main.command("generate-poses")
-@click.argument("filename")
+@click.argument("filename", metavar="PROJECT_NAME")
 @click.option("--frames", type=click.IntRange(min=1), help="Max number of frames to track.")
 @click.option(
     "--profile",
@@ -310,7 +314,7 @@ def planar_track(
 
 
 @main.command("planar-validate")
-@click.argument("filename")
+@click.argument("filename", metavar="PROJECT_NAME")
 @click.option("--projections", type=click.Path(dir_okay=False, path_type=Path), help="Override the planar projection artifact.")
 @click.option("--reference", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Reference planar projection artifact to compare against.")
 @click.option(

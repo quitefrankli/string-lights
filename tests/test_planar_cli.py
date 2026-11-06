@@ -496,7 +496,7 @@ def test_removed_tracking_options_are_rejected(arguments):
 def test_tabs_editor_requires_project():
     result = CliRunner().invoke(main, ['tabs-editor'])
     assert result.exit_code != 0
-    assert "Missing argument 'PROJECT'" in result.output
+    assert "Missing argument 'PROJECT_NAME'" in result.output
 
 
 def test_tabs_editor_launches_selected_project(tmp_path, monkeypatch):

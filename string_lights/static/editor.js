@@ -248,14 +248,13 @@ document.addEventListener('keydown', event => {
   }
 });
 
-async function loadNpy(stem, generation, undoable = false) {
+async function loadNpy(stem, generation) {
   try {
     const response = await fetch('/load/' + encodeURIComponent(stem));
     if (generation !== loadGeneration) return;
     if (!response.ok) throw new Error(response.status === 404 ? 'File not found.' : (await response.json()).error);
     const { frames } = await response.json();
     if (generation !== loadGeneration) return;
-    if (undoable) saveUndo();
     notes = notesFromFrames(frames).map(note => ({ ...note, string: assignedString(note.string) }));
     transcriptionDuration = frames.length / TRANSCRIPTION_FPS;
     selection = null; copyBuffer = null; gesture = null;
@@ -268,28 +267,8 @@ async function loadNpy(stem, generation, undoable = false) {
 
 // ── Video loading ──────────────────────────────────────────────────────────
 
-let availableItems = [];
-let availableTranscriptions = [];
-
-function populateTranscriptions(selected = '') {
-  const select = document.getElementById('transcription');
-  select.innerHTML = '';
-  const placeholder = document.createElement('option');
-  placeholder.value = '';
-  placeholder.textContent = 'Choose .npy…';
-  select.appendChild(placeholder);
-  for (const stem of availableTranscriptions) {
-    const option = document.createElement('option');
-    option.value = stem;
-    option.textContent = stem + '.npy';
-    select.appendChild(option);
-  }
-  select.value = availableTranscriptions.includes(selected) ? selected : '';
-}
-
-function currentStem() {
-  return document.getElementById('filename').value;
-}
+const editorConfig = JSON.parse(document.getElementById('editor-config').textContent);
+function currentStem() { return editorConfig.stem; }
 
 function setStatus(msg, kind = '') {
   const el = document.getElementById('status');
@@ -305,12 +284,11 @@ function loadVideo() {
   transcriptionDuration = 0; gridInterval = 0.25;
   document.getElementById('grid-interval').value = 250;
   renderTimeline();
-  populateTranscriptions(stem);
-  if (availableTranscriptions.includes(stem)) loadNpy(stem, generation);
+  if (editorConfig.has_transcription) loadNpy(stem, generation);
   video.src = '/video/' + stem;
   video.load();
   loadProjections(stem);
-  const item = availableItems.find(i => i.stem === stem);
+  const item = editorConfig;
   if (item) {
     const tags = [];
     if (item.has_projections) tags.push('planar projections ✓');
@@ -320,38 +298,6 @@ function loadVideo() {
   }
 }
 
-async function refreshFileList() {
-  const resp = await fetch('/list');
-  const data = await resp.json();
-  availableItems = data.items || [];
-  availableTranscriptions = data.transcriptions || [];
-  const sel = document.getElementById('filename');
-  const prev = sel.value;
-  sel.innerHTML = '';
-  for (const item of availableItems) {
-    const opt = document.createElement('option');
-    opt.value = item.stem;
-    let label = item.stem;
-    const flags = [];
-    if (item.has_projections) flags.push('H');
-    if (item.has_masks) flags.push('M');
-    if (flags.length) label += '  [' + flags.join('') + ']';
-    opt.textContent = label;
-    sel.appendChild(opt);
-  }
-  if (availableItems.length) {
-    sel.value = availableItems.find(i => i.stem === prev) ? prev : availableItems[0].stem;
-    loadVideo();
-  }
-}
-
-document.getElementById('filename').addEventListener('change', loadVideo);
-document.getElementById('load-transcription-btn').addEventListener('click', () => {
-  const stem = document.getElementById('transcription').value;
-  if (!currentStem() || !stem) { setStatus('Choose a video and transcription to load.', 'err'); return; }
-  video.pause();
-  loadNpy(stem, ++loadGeneration, true);
-});
 video.addEventListener('loadedmetadata', renderTimeline);
 
 document.getElementById('clear-btn').addEventListener('click', () => {
@@ -420,11 +366,6 @@ document.getElementById('export-btn').addEventListener('click', async () => {
     }
     if (!response.ok) throw new Error('Could not save transcription.');
     const result = await response.json();
-    if (!availableTranscriptions.includes(filename)) {
-      availableTranscriptions.push(filename);
-      availableTranscriptions.sort();
-      populateTranscriptions(document.getElementById('transcription').value || filename);
-    }
     setStatus(`Saved ${result.saved}`, 'ok');
   } catch (error) {
     setStatus('Export failed: ' + error.message, 'err');
@@ -507,4 +448,4 @@ rafLoop();
 // ── Init ───────────────────────────────────────────────────────────────────
 
 renderTimeline();
-refreshFileList();
+loadVideo();

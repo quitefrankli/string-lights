@@ -36,7 +36,7 @@ A custom mask file defaults to a sibling `<stem>.meta.npz` metadata file;
 `generate-masks --metadata-output` or `render-strings --mask-metadata` can override it.
 `--debug-masks` writes `tmp/masks-debug.mp4` unless `--output` is supplied.
 
-Launch the tabs editor for one project with `uv run string-lights tabs-editor cupid`.
+Launch the tabs editor for one project with `uv run string-lights tabs-editor cupid`. It loads `transcription.npy` by default; use `--transcription /path/to/take.npy` to load and save a different file.
 A project name is required; the editor reads and saves that project's files.
 
 ## Useful Commands
@@ -114,7 +114,9 @@ For variable string-light hold lengths, see the
 
 ### Lyrics export
 
-In `uv run string-lights lyrics-editor`, click **Export** to choose a layout:
+Launch the lyrics editor with `uv run string-lights lyrics-editor cupid` (or an explicit video path). It loads and saves the project’s `lyrics.json` by default; use `--lyrics /path/to/lyrics.json` to override it. Input files are selected through the CLI in both editors.
+
+In the lyrics editor, click **Export** to choose a layout:
 
 - **Recommended + padding** (default): 1080 × 1920 portrait, fitting the full video
   with black padding.

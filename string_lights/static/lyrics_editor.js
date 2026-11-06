@@ -2,7 +2,7 @@
 
 let lyrics = [];       // [{id, text, start, end, x, y, size, color:[r,g,b]}, ...]
 let selectedId = null;
-let currentStem = '';
+const currentStem = JSON.parse(document.getElementById('editor-config').textContent).stem;
 let exportAspect = 'padded';
 let exportFormat = 'compatible';
 let jitterTick = 0;
@@ -184,26 +184,7 @@ async function saveLyrics() {
   }
 }
 
-async function refreshFileList() {
-  const r = await fetch('/list');
-  const { items } = await r.json();
-  const sel = document.getElementById('filename');
-  const prev = sel.value;
-  sel.innerHTML = '';
-  for (const item of items) {
-    const opt = document.createElement('option');
-    opt.value = item.stem;
-    opt.textContent = item.stem;
-    sel.appendChild(opt);
-  }
-  if (items.length) {
-    sel.value = items.find(i => i.stem === prev) ? prev : items[0].stem;
-    loadVideo();
-  }
-}
-
 function loadVideo() {
-  currentStem = document.getElementById('filename').value;
   if (!currentStem) return;
   video.src = '/video/' + currentStem;
   video.load();
@@ -675,7 +656,6 @@ document.getElementById('set-end-btn').addEventListener('click', () => {
 document.getElementById('delete-btn').addEventListener('click', () => {
   if (selectedId) deleteLyric(selectedId);
 });
-document.getElementById('filename').addEventListener('change', loadVideo);
 
 // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -762,27 +742,7 @@ document.getElementById('export-form').addEventListener('submit', e => {
 
 // ── Init ───────────────────────────────────────────────────────────────────
 
-refreshFileList();
-
-document.getElementById('video-file').addEventListener('change', async e => {
-  try {
-    const form = new FormData(); form.append('video', e.target.files[0]);
-    setStatus('Opening video…');
-    const response = await fetch('/upload', {method:'POST', body:form});
-    if (!response.ok) throw new Error('Video upload failed');
-    const {stem} = await response.json();
-    const option = new Option(e.target.files[0].name, stem, true, true);
-    document.getElementById('filename').add(option); loadVideo();
-  } catch (error) { setStatus(error.message, 'err'); }
-});
-document.getElementById('json-file').addEventListener('change', async e => {
-  try {
-    const data = JSON.parse(await e.target.files[0].text());
-    if (!Array.isArray(data) || data.some(l => typeof l.text !== 'string' || !Number.isFinite(l.start) || !Number.isFinite(l.end) || l.start < 0 || l.end <= l.start)) throw new Error('Expected an array of lyrics with text, start, and end seconds');
-    lyrics = data.map(l => ({x:.5, y:.85, size:48, color:[255,255,255], fade:.25, ...l, id:uid()}));
-    selectLyric(null); renderList(); renderTimeline(); setStatus('Lyrics imported');
-  } catch (error) { setStatus(error.message, 'err'); }
-});
+loadVideo();
 
 function escapeText(text) { const el = document.createElement("span"); el.textContent = text; return el.innerHTML; }
 

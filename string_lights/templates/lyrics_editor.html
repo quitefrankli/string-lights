@@ -200,9 +200,6 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 <body>
 
 <div id="toolbar">
-  <label>File <select id="filename"></select></label>
-  <label>Open video <input id="video-file" type="file" accept="video/*"></label>
-  <label>Import JSON <input id="json-file" type="file" accept=".json"></label>
   <label title="Blue: 9:16 crop/export boundary. Amber: approximate text clearance. Preview only."><input id="reels-guides" type="checkbox" checked> Reels danger zones</label>
   <button id="add-btn">+ Add</button>
   <button id="save-btn">Save</button>
@@ -319,6 +316,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
     </div>
   </form>
 </dialog>
+<script id="editor-config" type="application/json">{{ config | tojson }}</script>
 <script src="/static/lyrics_editor.js"></script>
 </body>
 </html>

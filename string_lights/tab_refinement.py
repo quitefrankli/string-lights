@@ -208,7 +208,7 @@ def align(events, score, tuning, capo, *, group_window=.08):
 
 def main(argv=None, *, prog=None):
     parser=argparse.ArgumentParser(prog=prog, description=__doc__)
-    parser.add_argument('input',help='Project name or video path')
+    parser.add_argument('input', metavar='PROJECT_NAME',help='Project name or video path')
     parser.add_argument('--tabs',required=True,type=Path)
     parser.add_argument('--transcription',type=Path,help='Existing .npy with same-stem generation JSON')
     parser.add_argument('--output',type=Path,help='Default: update project transcription and companion')

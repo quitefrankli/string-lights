@@ -26,8 +26,7 @@ def test_editor_planar_overlay(tmp_path, monkeypatch):
         'w': 320, 'h': 240, 'fps': 30.0, 'total': 2,
         'lines': [lines.reshape(6, 4).astype(int).tolist(), None],
     }
-    item = client.get('/list').json['items'][0]
-    assert item['has_projections'] is True
+    assert create_app('clip').test_client().get('/').status_code == 200
 
 
 def test_editor_missing_tracking_explains_planar_command(tmp_path, monkeypatch):
@@ -92,7 +91,7 @@ def test_export_rejects_path_traversal_and_invalid_frames(tmp_path, monkeypatch)
     assert not (tmp_path / 'data/projects/clip/transcription.npy').exists()
 
 
-def test_editor_lists_and_loads_transcription_with_different_name(tmp_path, monkeypatch):
+def test_editor_loads_transcription_with_different_name(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     inputs = tmp_path / 'data/projects/recording'
     inputs.mkdir(parents=True)
@@ -104,9 +103,6 @@ def test_editor_lists_and_loads_transcription_with_different_name(tmp_path, monk
     np.save(other / 'transcription.npy', frames)
     np.save(inputs / 'transcription.npy', np.zeros((44, 6), dtype=np.int64))
     client = create_app().test_client()
-    listing = client.get('/list').json
-    assert listing['transcriptions'] == ['different take', 'recording']
-    assert [item['stem'] for item in listing['items']] == ['recording']
     response = client.get('/load/different%20take')
     assert response.status_code == 200
     assert response.json['frames'] == frames.tolist()
@@ -137,9 +133,7 @@ def test_project_editor_scopes_listing_loading_and_saving(tmp_path, monkeypatch)
         (directory / 'source.mp4').touch()
         np.save(directory / 'transcription.npy', np.zeros((2, 6), dtype=np.int64))
     client = create_app('cupid').test_client()
-    listing = client.get('/list').json
-    assert [item['stem'] for item in listing['items']] == ['cupid']
-    assert listing['transcriptions'] == ['cupid']
+    assert client.get('/list').status_code == 404
     assert client.get('/load/cupid').status_code == 200
     assert client.get('/load/gunjo').status_code == 404
     assert client.get('/video/gunjo').status_code == 404
@@ -153,3 +147,29 @@ def test_project_editor_scopes_listing_loading_and_saving(tmp_path, monkeypatch)
     np.testing.assert_array_equal(np.load('data/projects/gunjo/transcription.npy'), np.zeros((2, 6)))
     from string_lights import paths
     assert paths.project_override.get() is None
+
+
+def test_tabs_cli_transcription_override_survives_request_context(tmp_path, monkeypatch):
+    from string_lights import paths
+
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / 'data/projects/clip'
+    directory.mkdir(parents=True)
+    (directory / 'source.mp4').touch()
+    custom = tmp_path / 'custom.npy'
+    np.save(custom, [[3] * 6])
+    token = paths.artifact_overrides.set({'transcription': custom})
+    try:
+        app = create_app('clip')
+    finally:
+        paths.artifact_overrides.reset(token)
+    client = app.test_client()
+    page = client.get('/').text
+    assert 'id="filename"' not in page
+    assert 'id="transcription"' not in page
+    assert client.get('/load/clip').json['frames'] == [[3] * 6]
+    assert client.post('/export', json={
+        'filename': 'clip', 'frames': [[2] * 6], 'overwrite': True,
+    }).status_code == 200
+    np.testing.assert_array_equal(np.load(custom), [[2] * 6])
+    assert not (directory / 'transcription.npy').exists()

@@ -37,3 +37,15 @@ def test_subcommand_help_and_validation():
     result = runner.invoke(main, ['generate-transcription', 'song', '--capo', '20'])
     assert result.exit_code == 2
     assert 'Capo must be' in result.output
+
+
+def test_all_commands_describe_project_argument():
+    runner = CliRunner()
+    for name in main.commands:
+        result = runner.invoke(main, [name, '--help'], prog_name='string-lights')
+        assert result.exit_code == 0, result.output
+        assert 'PROJECT_NAME' in result.output, name
+        assert 'FILENAME' not in result.output, name
+        result = runner.invoke(main, [name], prog_name='string-lights')
+        assert result.exit_code != 0
+        assert 'PROJECT_NAME' in result.output, result.output

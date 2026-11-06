@@ -94,7 +94,7 @@ def write_outputs(output, frames, metadata, force=False):
 
 def main(argv=None, *, prog=None):
     parser = argparse.ArgumentParser(prog=prog, description=__doc__)
-    parser.add_argument('input', help='Project name or explicit video path')
+    parser.add_argument('input', metavar='PROJECT_NAME', help='Project name or explicit video path')
     parser.add_argument('--capo', type=int, default=0, help='Capo fret (default: 0)')
     parser.add_argument('--tuning', nargs=6, type=int, default=[40,45,50,55,59,64],
                         metavar='MIDI', help='Six open-string MIDI pitches, low to high, before capo')

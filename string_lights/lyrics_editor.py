@@ -1,15 +1,14 @@
 import subprocess
 import threading
-import hashlib
-from werkzeug.utils import secure_filename
+from contextvars import copy_context
 from pathlib import Path
 
 import cv2
 import numpy as np
-from flask import Flask, jsonify, request, send_from_directory, render_template
+from flask import Flask, g, jsonify, request, send_from_directory, render_template
 
-VIDEO_EXTS = [".mp4", ".avi", ".mov", ".mkv", ".flv", ".m4v"]
-from .paths import artifact_path, project_dir, resolve_video, list_projects
+from . import paths
+from .paths import artifact_path, resolve_video
 
 # Single-slot render status (one render at a time is fine for local use)
 _render: dict = {"state": "idle", "stem": None, "progress": 0.0, "error": None}
@@ -120,33 +119,33 @@ def _do_render(stem: str, aspect: str = "padded", export_format: str = "source_a
             _render.update(state="error", error=str(exc))
 
 
-def create_lyrics_app() -> Flask:
+def create_lyrics_app(filename: str | None = None) -> Flask:
     from .lyrics import load_lyrics, save_lyrics
 
     app = Flask(__name__)
 
-    @app.post("/upload")
-    def upload():
-        file = request.files["video"]
-        ext = Path(file.filename or "").suffix.lower()
-        if ext not in VIDEO_EXTS:
-            return jsonify(error="Unsupported video format"), 400
-        name = secure_filename(file.filename or "")
-        base = Path(name).stem or "video"
-        content = file.read()
-        digest = hashlib.sha256(content).digest()
-        stem = base
-        suffix = 2
-        while project_dir(stem).exists():
-            target = project_dir(stem) / ("source" + ext)
-            if target.exists() and hashlib.sha256(target.read_bytes()).digest() == digest:
-                return jsonify(stem=stem)
-            stem = f"{base}_{suffix}"
-            suffix += 1
-        directory = project_dir(stem)
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / ("source" + ext)).write_bytes(content)
-        return jsonify(stem=stem)
+    source = resolve_video(filename).resolve() if filename is not None else None
+    stem_name = paths.project_dir(source).name if source is not None else None
+    directory = paths.project_dir(source).resolve() if source is not None else None
+    overrides = paths.artifact_overrides.get().copy()
+
+    @app.before_request
+    def select_project():
+        if source is None:
+            return
+        stem = (request.view_args or {}).get("stem")
+        if stem is not None and stem != stem_name:
+            return "Not found", 404
+        g.project_token = paths.project_override.set(directory)
+        g.artifacts_token = paths.artifact_overrides.set(overrides)
+
+    @app.teardown_request
+    def release_project(error):
+        for key, variable in (("project_token", paths.project_override),
+                              ("artifacts_token", paths.artifact_overrides)):
+            token = g.pop(key, None)
+            if token is not None:
+                variable.reset(token)
 
     @app.get("/download/<stem>")
     def download(stem):
@@ -156,17 +155,13 @@ def create_lyrics_app() -> Flask:
 
     @app.route("/")
     def index():
-        return render_template("lyrics_editor.html")
-
-    @app.route("/list")
-    def list_videos():
-        return jsonify({"items": [{"stem": s} for s in list_projects()]})
+        return render_template("lyrics_editor.html", config={"stem": stem_name})
 
     @app.route("/video/<stem>")
     def video(stem):
         from .editor import _browser_video
 
-        p = _resolve_input(stem)
+        p = source if source is not None else _resolve_input(stem)
         if p is None:
             return "Not found", 404
         p = _browser_video(p)
@@ -219,7 +214,11 @@ def create_lyrics_app() -> Flask:
             if _render["state"] == "running":
                 return jsonify({"error": "render already in progress"}), 409
             _render.update(state="running", stem=stem, progress=0.0, error=None)
-        threading.Thread(target=_do_render, args=(stem, aspect, export_format), daemon=True).start()
+        context = copy_context()
+        threading.Thread(
+            target=lambda *args: context.run(_do_render, *args),
+            args=(str(source) if source else stem, aspect, export_format), daemon=True,
+        ).start()
         return jsonify({"ok": True})
 
     @app.route("/render-status")

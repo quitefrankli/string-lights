@@ -9,7 +9,7 @@ import numpy as np
 from flask import Flask, g, jsonify, request, send_from_directory, render_template
 
 from . import paths
-from .paths import artifact_path, project_dir, resolve_video, list_projects
+from .paths import artifact_path, project_dir, resolve_video
 
 
 def _browser_video(source: Path) -> Path:
@@ -49,26 +49,12 @@ def _resolve_input(stem: str) -> Path | None:
         return None
 
 
-def _list_inputs() -> list[dict]:
-    from .pipeline import masks_path
-    from .planar_io import projection_path
-
-    seen = list_projects()
-    items = []
-    for stem in sorted(seen):
-        items.append({
-            "stem": stem,
-            "has_projections": projection_path(stem).exists(),
-            "has_masks": masks_path(stem).exists(),
-        })
-    return items
-
-
 def create_app(project: str | None = None) -> Flask:
     app = Flask(__name__)
+    overrides = paths.artifact_overrides.get().copy()
     directory = None
     if project is not None:
-        directory = (paths.PROJECTS_DIR / project).resolve()
+        directory = (paths.project_override.get() or paths.PROJECTS_DIR / project).resolve()
         resolve_video(directory)
 
     @app.before_request
@@ -79,31 +65,26 @@ def create_app(project: str | None = None) -> Flask:
         if stem is not None and stem != project:
             return "Not found", 404
         g.project_token = paths.project_override.set(directory)
+        g.artifacts_token = paths.artifact_overrides.set(overrides)
 
     @app.teardown_request
     def release_project(error):
+        artifact_token = g.pop("artifacts_token", None)
+        if artifact_token is not None:
+            paths.artifact_overrides.reset(artifact_token)
         token = g.pop("project_token", None)
         if token is not None:
             paths.project_override.reset(token)
 
     @app.route("/")
     def index():
-        return render_template("editor.html")
-
-    @app.route("/list")
-    def list_videos():
-        if project is not None:
-            from .pipeline import masks_path
-            from .planar_io import projection_path
-            return jsonify({
-                "items": [{"stem": project,
-                           "has_projections": projection_path(project).exists(),
-                           "has_masks": masks_path(project).exists()}],
-                "transcriptions": [project] if artifact_path(project, "transcription").is_file() else [],
-            })
-        return jsonify({
-            "items": _list_inputs(),
-            "transcriptions": sorted(p.parent.name for p in paths.PROJECTS_DIR.glob("*/transcription.npy")),
+        from .pipeline import masks_path
+        from .planar_io import projection_path
+        return render_template("editor.html", config={
+            "stem": project,
+            "has_transcription": artifact_path(project, "transcription").is_file(),
+            "has_projections": projection_path(project).exists(),
+            "has_masks": masks_path(project).exists(),
         })
 
     @app.route("/video/<stem>")

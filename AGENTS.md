@@ -1,3 +1,13 @@
+# Running the app and tests
+
+Always use `uv run` to run the app, tests, and project Python commands so they use the project's environment and dependencies.
+
+- Run the app with `uv run string-lights <command> [options]`.
+- Run the full test suite with `uv run python -m pytest`; add test paths or pytest options as needed.
+- Run other Python commands with `uv run python ...`.
+
+Do not invoke the app, `python`, or `pytest` directly using the system environment.
+
 # Project data
 
 Store each input clip and its related files under `data/projects/<project>/`:
@@ -14,4 +24,4 @@ AI agents must put project experiments in `data/projects/<project>/tmp/`, using 
 
 Commands accept a project name or an explicit video path. Use `--project-dir` to select the default artifact directory for an external input, and `--output` plus the command's artifact options to give files arbitrary paths/names. `--projects-dir` before the subcommand changes the project collection root, including for the web editors. Inspect `--help` for available overrides. A custom mask output uses `<output-stem>.meta.npz` for its sidecar unless metadata is explicitly specified.
 
-Launch the tabs editor with `string-lights tabs-editor <project>`; a project name is required and the editor is scoped to that project.
+Launch the tabs editor with `uv run string-lights tabs-editor <project>`; a project name is required and the editor is scoped to that project.
