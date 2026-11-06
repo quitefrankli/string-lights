@@ -15,6 +15,9 @@ from .assign_strings import export
 from .transcription import write_outputs
 from .transcription_models import sha256
 
+DEFAULT_CODEX_MODEL = "gpt-6.1-sol"
+CODEX_REASONING_EFFORT = "low"
+
 SCHEMA = {
     'type': 'object', 'additionalProperties': False,
     'properties': {
@@ -64,7 +67,7 @@ def validate_score(score):
     return score
 
 
-def extract_tabs(pdf, work_dir, *, pages, first_bar, last_bar, model=None, timeout=300):
+def extract_tabs(pdf, work_dir, *, pages, first_bar, last_bar, model=DEFAULT_CODEX_MODEL, timeout=300):
     """Codex sees page images only; application code writes and validates results."""
     if pages is None:
         info = subprocess.check_output(['pdfinfo', str(pdf.resolve())], text=True)
@@ -77,7 +80,7 @@ def extract_tabs(pdf, work_dir, *, pages, first_bar, last_bar, model=None, timeo
     work_dir.mkdir(parents=True, exist_ok=True)
     version = subprocess.check_output(['codex','--version'], text=True).strip()
     identity = dict(pdf_sha256=sha256(pdf), pages=pages, first_bar=first_bar,
-                    last_bar=last_bar, requested_model=model, prompt_version=1,
+                    last_bar=last_bar, requested_model=model, reasoning_effort=CODEX_REASONING_EFFORT, prompt_version=1,
                     schema_sha256=__import__('hashlib').sha256(json.dumps(SCHEMA,sort_keys=True).encode()).hexdigest(),
                     codex_version=version)
     cache_file, manifest = work_dir/'tabs.json', work_dir/'extraction.json'
@@ -116,8 +119,7 @@ Use only the images. Do not inspect project files, existing annotations or audio
     raw.unlink(missing_ok=True)
     cmd = ['codex','exec','--ephemeral','--sandbox','read-only',
            '--output-schema',str(schema_path.resolve()),'-o',str(raw.resolve())]
-    if model:
-        cmd += ['--model',model]
+    cmd += ['--model', model, '-c', f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"']
     for image in images:
         cmd += ['--image',str(image)]
     cmd += ['-']
@@ -204,23 +206,24 @@ def align(events, score, tuning, capo, *, group_window=.08):
                         unresolved_event_indices=[i for i in range(len(events)) if i not in used])
 
 
-def main():
-    parser=argparse.ArgumentParser(description=__doc__)
+def main(argv=None, *, prog=None):
+    parser=argparse.ArgumentParser(prog=prog, description=__doc__)
     parser.add_argument('input',help='Project name or video path')
     parser.add_argument('--tabs',required=True,type=Path)
     parser.add_argument('--transcription',type=Path,help='Existing .npy with same-stem generation JSON')
     parser.add_argument('--output',type=Path,help='Default: update project transcription and companion')
-    parser.add_argument('--projects-dir',type=Path,default=Path('data/projects'))
+    parser.add_argument('--projects-dir',type=Path,default=paths.PROJECTS_DIR)
     parser.add_argument('--project-dir',type=Path)
     parser.add_argument('--work-dir',type=Path,help='Default: project tmp/tab-refinement')
     parser.add_argument('--pages',nargs='+',type=int,default=None,help='PDF pages to read (default: all)')
     parser.add_argument('--first-bar',type=int)
     parser.add_argument('--last-bar',type=int)
-    parser.add_argument('--codex-model')
+    parser.add_argument('--codex-model', default=DEFAULT_CODEX_MODEL,
+                        help=f'PDF extraction model (default: {DEFAULT_CODEX_MODEL}; reasoning effort: low)')
     parser.add_argument('--timeout',type=float,default=300)
     parser.add_argument('--min-coverage',type=float,default=.5,help='Minimum fraction of audio notes matched (default: .5)')
     parser.add_argument('--force',action='store_true',help='Allow replacing output and companion')
-    args=parser.parse_args()
+    args=parser.parse_args(argv)
     old_root=paths.PROJECTS_DIR;paths.PROJECTS_DIR=args.projects_dir
     token=paths.project_override.set(args.project_dir)
     try:

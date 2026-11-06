@@ -390,5 +390,28 @@ def planar_validate(
     click.echo("Planar validation passed")
 
 
+def _register_argument_command(name, module_name, summary):
+    """Keep argparse validation and help behind the shared Click command group."""
+    @click.command(
+        name, short_help=summary, add_help_option=False,
+        context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+    )
+    @click.pass_context
+    def command(ctx):
+        from importlib import import_module
+
+        module = import_module(f".{module_name}", __package__)
+        module.main(ctx.args, prog=ctx.command_path)
+
+    main.add_command(command)
+
+
+for _name, _module, _summary in (
+    ("generate-transcription", "transcription", "Generate string highlights from audio."),
+    ("refine-transcription", "tab_refinement", "Refine audio string assignments using a tab PDF."),
+):
+    _register_argument_command(_name, _module, _summary)
+
+
 if __name__ == "__main__":
     main()

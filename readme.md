@@ -96,8 +96,8 @@ Replace `00:00:10` and `00:00:30` with your desired start and end timestamps (`H
 
 ## Configuration
 
-To generate highlight data from a manually annotated tablature score, use
-`scripts/generate_transcription.py`. See [the score format and workflow](docs/tab-transcription.md).
+Generate highlights from audio with `uv run string-lights generate-transcription`,
+then optionally refine string choices with `uv run string-lights refine-transcription`.
 For variable string-light hold lengths, see the
 [PDF-based note-duration workflow](docs/note-duration-workflow.md).
 
@@ -164,8 +164,8 @@ The reference must use the same dimensions and frame count as the trial cache.
 ### Generate transcription from audio
 
 ```bash
-uv run generate-transcription cupid --capo 2
-uv run generate-transcription /path/to/video.mp4 --project-dir data/projects/my-project --capo 2
+uv run string-lights generate-transcription cupid --capo 2
+uv run string-lights generate-transcription /path/to/video.mp4 --project-dir data/projects/my-project --capo 2
 ```
 
 Generates `transcription.npy` and `transcription.json` in the project directory.
@@ -187,7 +187,7 @@ the tabs editor before final rendering. PDF-assisted refinement is described bel
 For experiments, give an explicit output path and optionally limit duration:
 
 ```bash
-uv run generate-transcription cupid --capo 2 --duration 15 \
+uv run string-lights generate-transcription cupid --capo 2 --duration 15 \
   --output data/projects/cupid-onset-benchmark/tmp/generated.npy
 ```
 
@@ -201,7 +201,7 @@ part of transcription generation.
 ### Refine string choices using a tab PDF
 
 ```bash
-uv run refine-transcription my-project --tabs /path/to/tabs.pdf --force
+uv run string-lights refine-transcription my-project --tabs /path/to/tabs.pdf --force
 ```
 
 Requires `codex` installed and authenticated, plus Poppler's `pdftoppm` and
@@ -223,17 +223,19 @@ capo conflicts are also rejected. By default, at least half the audio notes must
 align; inspect the extraction before lowering `--min-coverage`.
 
 All PDF pages are read by default. Use `--pages 1`, `--first-bar 2`, `--last-bar 8`
-to limit extraction, and `--codex-model` to select a model. Extracted `tabs.json`,
+to limit extraction. Extraction explicitly uses `gpt-6.1-sol` with `low` reasoning
+effort, independent of local Codex defaults; `--codex-model` overrides the model.
+Extracted `tabs.json`,
 page images, prompt/schema and Codex log are cached under the project's
 `tmp/tab-refinement/`. Cache identity includes the PDF checksum, page/bar range,
-prompt/schema version, CLI version and requested model. A matching extraction is
+prompt/schema version, CLI version, requested model and reasoning effort. A matching extraction is
 reused without another inference call. `--work-dir` overrides that location.
 The default extraction timeout is 300 seconds (`--timeout` overrides it).
 
 Use explicit paths for experiments:
 
 ```bash
-uv run refine-transcription cupid --tabs data/projects/cupid/Cupid.pdf \
+uv run string-lights refine-transcription cupid --tabs data/projects/cupid/Cupid.pdf \
   --transcription data/projects/cupid-onset-benchmark/tmp/command-transcription.npy \
   --output data/projects/cupid-onset-benchmark/tmp/pdf-refined.npy \
   --work-dir data/projects/cupid-onset-benchmark/tmp/pdf-refinement \

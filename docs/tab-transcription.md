@@ -1,8 +1,8 @@
-# Generating a transcription from annotated tablature
+# Annotated tablature format for duration experiments
 
-`scripts/generate_transcription.py` converts a manually annotated score JSON into
-the editor's six-column `.npy` highlight format and a JSON timing/provenance
-sidecar. It does not automatically read notes or rhythm from a PDF.
+This records the manually annotated score format used by historical duration
+experiments. The standalone score-to-transcription generator has been removed;
+new transcriptions use the audio generation and optional PDF refinement commands.
 
 For estimating hold lengths from PDF note groups and spacing while preserving
 an existing recording's note onsets, follow the
@@ -37,7 +37,7 @@ To control note length, add a fourth field in quarter-note beats:
 `[0, "e3", "pluck", 0.5]` lights high e for half a beat at the same onset.
 Use separate entries at the same beat for strings with different lengths.
 Durations must be finite and positive; entries without a duration retain the
-`--pulse` behavior. Durations can cross bar boundaries and are clipped at the end
+experiment’s fallback pulse duration. Durations can cross bar boundaries and are clipped at the end
 of the selected output range. Overlapping activations on the same string merge;
 leave a gap when repeated notes should visibly retrigger. Durations and clipped,
 quantized end times are included in the JSON sidecar.
@@ -45,28 +45,6 @@ quantized end times are included in the JSON sidecar.
 The renderer holds the light throughout each activation, then adds its existing
 0.5-second fade. The duration field controls the hold, not that fade.
 
-```bash
-uv run python scripts/generate_transcription.py data/projects/example/tmp/score.json \
-  --output data/projects/example/transcription.npy
-```
-
-Options:
-
-- `--bpm` and `--beats-per-bar`: override score timing.
-- `--first-bar` and `--last-bar`: select the included range. The default first
-  bar is the score's `first_bar`, or its earliest annotated bar; the default last
-  bar is its latest annotated bar. Unannotated bars within the range remain silent.
-- `--offset`: seconds of silence before the first included bar, default 0.
-- `--pulse`: fallback highlight duration in seconds for entries without an
-  explicit duration, default 0.09.
-- `--include-percussion`: include muted strikes. Otherwise they are omitted while
-  retaining any simultaneous pitched notes.
-
-Output uses the application's existing 44 Hz transcription grid, independent of
-the video's frame rate. A strum activates its strings simultaneously. Slides,
-hammer-ons and pull-offs described in technique text do not create extra onsets;
-add separate beat entries when they should retrigger a highlight.
-
-Review inferred rhythm and align the result with the recording in the editor.
-Keep score JSON and generated output stems different: output writes both `.npy`
-and `.json` and replaces existing output files.
+The application's transcription grid uses 44 Hz, independent of video frame rate.
+Review inferred rhythm against the recording. See the duration workflow for
+project-specific alignment that preserves existing note onsets.

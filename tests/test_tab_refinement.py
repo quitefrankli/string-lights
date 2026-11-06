@@ -77,6 +77,8 @@ def test_extraction_cache_avoids_codex_inference(tmp_path,monkeypatch):
         calls.append(cmd)
         if cmd[0]=='codex':
             assert cmd[cmd.index('--sandbox')+1]=='read-only'
+            assert cmd[cmd.index('--model')+1]=='gpt-6.1-sol'
+            assert cmd[cmd.index('-c')+1]=='model_reasoning_effort="low"'
             assert '--output-schema' in cmd and '--image' in cmd
             assert 'Do not run tools' in kwargs['input']
             from types import SimpleNamespace
@@ -88,3 +90,10 @@ def test_extraction_cache_avoids_codex_inference(tmp_path,monkeypatch):
     for _ in range(2):
         module.extract_tabs(pdf,tmp_path/'work',pages=[1],first_bar=2,last_bar=2)
     assert sum(cmd[0]=='codex' for cmd in calls)==1
+    manifest=json.loads((tmp_path/'work'/'extraction.json').read_text())
+    assert manifest['request']['requested_model']=='gpt-6.1-sol'
+    assert manifest['request']['reasoning_effort']=='low'
+    manifest['request'].pop('reasoning_effort')
+    (tmp_path/'work'/'extraction.json').write_text(json.dumps(manifest))
+    module.extract_tabs(pdf,tmp_path/'work',pages=[1],first_bar=2,last_bar=2)
+    assert sum(cmd[0]=='codex' for cmd in calls)==2

@@ -1,14 +1,10 @@
 # Audio onset prototype
 
-Install the optional dependency with `uv sync --extra audio`, then run:
+This is a historical research report. The standalone onset comparison utility
+has been removed. Note timing detection remains part of
+`uv run string-lights generate-transcription`.
 
-```bash
-uv run --extra audio python scripts/detect_onsets.py data/projects/cupid/source.mp4 \
-  --reference data/projects/cupid/transcription.npy \
-  --output-dir data/projects/cupid-onset-benchmark/tmp
-```
-
-This reads Cupid's files without writing into its directory. The separate benchmark project is intentional: the user requested that Cupid remain untouched.
+The outputs below describe the original experiment artifacts.
 
 Outputs:
 

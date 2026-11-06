@@ -41,8 +41,6 @@ markers = [
 
 [project.scripts]
 string-lights = "string_lights.__main__:main"
-generate-transcription = "string_lights.transcription:main"
-refine-transcription = "string_lights.tab_refinement:main"
 
 [tool.uv.sources]
 sam2matting = { path = "vendor/sam2matting" }

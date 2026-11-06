@@ -85,7 +85,7 @@ This is agreement over timing-matched groups on a previously inspected excerpt, 
 
 ## Non-interactive Codex PDF refinement smoke test
 
-Implemented `uv run refine-transcription` with PDF page rasterization, Codex read-only image inference constrained by a JSON schema, validated/cached extracted events, and Python sequence alignment. See the README for commands and prerequisites. No PDF file is edited. Input arrays require a matching generation companion checksum.
+Implemented `uv run string-lights refine-transcription` with PDF page rasterization, Codex read-only image inference constrained by a JSON schema, validated/cached extracted events, and Python sequence alignment. See the README for commands and prerequisites. No PDF file is edited. Input arrays require a matching generation companion checksum.
 
 The test used PDF page 1, bars 2–8, capo 2, and the 15-second `command-transcription.npy` produced by the packaged generation command. It matched 42 of 51 audio notes, changed four string assignments and retained nine unresolved notes. All audio pitches, starts and ends were asserted unchanged. The reference NPY was not supplied to Codex or the aligner; it was used only for evaluation.
 

@@ -92,15 +92,15 @@ def write_outputs(output, frames, metadata, force=False):
             temporary.unlink(missing_ok=True)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv=None, *, prog=None):
+    parser = argparse.ArgumentParser(prog=prog, description=__doc__)
     parser.add_argument('input', help='Project name or explicit video path')
     parser.add_argument('--capo', type=int, default=0, help='Capo fret (default: 0)')
     parser.add_argument('--tuning', nargs=6, type=int, default=[40,45,50,55,59,64],
                         metavar='MIDI', help='Six open-string MIDI pitches, low to high, before capo')
     parser.add_argument('--model', choices=['gaps', 'fl'], default='gaps')
     parser.add_argument('--device', choices=['auto', 'cuda', 'cpu'], default='auto')
-    parser.add_argument('--projects-dir', type=Path, default=Path('data/projects'))
+    parser.add_argument('--projects-dir', type=Path, default=paths.PROJECTS_DIR)
     parser.add_argument('--project-dir', type=Path)
     parser.add_argument('--output', type=Path, help='Default: project transcription.npy; also writes same-stem JSON')
     parser.add_argument('--model-cache', type=Path, default=Path('data/tmp/transcription-models'))
@@ -108,7 +108,7 @@ def main():
     parser.add_argument('--pulse', type=float, default=.09, help='Light hold in seconds')
     parser.add_argument('--evidence-window', type=float, default=.08)
     parser.add_argument('--force', action='store_true', help='Replace existing output and companion JSON')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not 0 <= args.capo <= 19 or any(not 0 <= p <= 127 for p in args.tuning):
         parser.error('Capo must be 0..19 and tuning pitches must be 0..127')
     if args.pulse <= 0 or not np.isfinite(args.pulse) or args.evidence_window < 0 or not np.isfinite(args.evidence_window):
