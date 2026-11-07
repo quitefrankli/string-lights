@@ -7,8 +7,43 @@ let exportAspect = 'padded';
 let exportFormat = 'compatible';
 let jitterTick = 0;
 let lastJitterUpdate = 0;  // timestamp of last jitter step
+let canvasDrag = null; // {id, ox, oy, snapX, snapY}
 
 const PX_PER_SEC = 80;  // timeline pixels per second
+const LANE_HEIGHT = 44;
+let timelineLanes = new Map();
+const undoStack = [], redoStack = [];
+let formEdit = null;
+
+function snapshot() {
+  return {lyrics: JSON.stringify(lyrics), selectedId};
+}
+
+function rememberEdit(before) {
+  if (before.lyrics === JSON.stringify(lyrics)) return;
+  undoStack.push(before);
+  if (undoStack.length > 100) undoStack.shift();
+  redoStack.length = 0;
+}
+
+function finishFormEdit() {
+  if (!formEdit) return;
+  rememberEdit(formEdit);
+  formEdit = null;
+}
+
+function restoreHistory(redo = false) {
+  if (canvasDrag || tlDrag) return;
+  finishFormEdit();
+  const from = redo ? redoStack : undoStack;
+  const to = redo ? undoStack : redoStack;
+  if (!from.length) return;
+  to.push(snapshot());
+  const state = from.pop();
+  lyrics = JSON.parse(state.lyrics);
+  selectedId = state.selectedId;
+  renderList(); renderTimeline(); selectLyric(selectedId);
+}
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
 
@@ -63,28 +98,49 @@ function getLyric(id) {
 }
 
 function addLyric() {
+  finishFormEdit();
+  const before = snapshot();
   const t = video.currentTime || 0;
   const lyric = {
     id: uid(), text: '', start: parseFloat(t.toFixed(2)),
     end: parseFloat((t + 3).toFixed(2)),
     x: 0.5, y: 0.85, size: 48, color: [255, 255, 255],
-    background_opacity: .65, background_padding: 16, background_softness: 24,
+    font: 'auto', halo_size: 0, halo_intensity: 0,
+    background_opacity: 0, background_padding: 0, background_softness: 0,
   };
   lyrics.push(lyric);
   renderList();
   renderTimeline();
   selectLyric(lyric.id);
+  rememberEdit(before);
   document.getElementById('lyric-text').focus();
 }
 
 function deleteLyric(id) {
+  finishFormEdit();
+  const before = snapshot();
   lyrics = lyrics.filter(l => l.id !== id);
   if (selectedId === id) selectLyric(null);
   renderList();
   renderTimeline();
+  rememberEdit(before);
+}
+
+function duplicateLyric() {
+  finishFormEdit();
+  const original = getLyric(selectedId);
+  if (!original) return;
+  const before = snapshot();
+  const copy = JSON.parse(JSON.stringify(original));
+  copy.id = uid();
+  delete copy.lane;
+  lyrics.push(copy);
+  renderList(); renderTimeline(); selectLyric(copy.id);
+  rememberEdit(before);
 }
 
 function selectLyric(id) {
+  finishFormEdit();
   selectedId = id;
   document.querySelectorAll('.lyric-item').forEach(el => el.classList.toggle('selected', el.dataset.id === id));
   document.querySelectorAll('.tl-block').forEach(el => el.classList.toggle('selected', el.dataset.id === id));
@@ -94,6 +150,7 @@ function selectLyric(id) {
 }
 
 function populateForm(lyric) {
+  document.getElementById('lyric-font').value = lyric.font ?? 'auto';
   document.getElementById('lyric-background-opacity').value = lyric.background_opacity ?? 0;
   document.getElementById('lyric-background-padding').value = lyric.background_padding ?? 16;
   document.getElementById('lyric-background-softness').value = lyric.background_softness ?? 24;
@@ -116,6 +173,7 @@ function populateForm(lyric) {
 
 function readForm() {
   return {
+    font: document.getElementById('lyric-font').value,
     background_opacity: Number(document.getElementById('lyric-background-opacity').value),
     background_padding: Number(document.getElementById('lyric-background-padding').value),
     background_softness: Number(document.getElementById('lyric-background-softness').value),
@@ -136,6 +194,7 @@ function commitForm() {
   if (!selectedId) return;
   const lyric = getLyric(selectedId);
   if (!lyric) return;
+  if (!formEdit) formEdit = snapshot();
   Object.assign(lyric, readForm());
   document.getElementById('background-opacity-val').textContent = lyric.background_opacity ? Math.round(lyric.background_opacity * 100) + '%' : 'Off';
   document.getElementById('halo-intensity-val').textContent = Math.round(lyric.halo_intensity * 100) + '%';
@@ -144,6 +203,8 @@ function commitForm() {
 }
 
 // Live-update from form inputs
+lyricForm.addEventListener('change', finishFormEdit);
+lyricForm.addEventListener('focusout', finishFormEdit);
 ['lyric-background-opacity','lyric-background-padding','lyric-background-softness','lyric-halo-size','lyric-halo-intensity','lyric-text','lyric-start','lyric-end','lyric-x','lyric-y','lyric-size','lyric-color','lyric-jitter'].forEach(id => {
   document.getElementById(id).addEventListener('input', commitForm);
 });
@@ -152,6 +213,16 @@ document.getElementById('lyric-jitter').addEventListener('input', e => {
 });
 
 // ── Network ────────────────────────────────────────────────────────────────
+document.getElementById('lyric-font').addEventListener('change', commitForm);
+
+function lyricFont(size, text, name = 'auto') {
+  const family = /[\u3040-\u30ff\u3400-\u9fff]/.test(text) ? 'Japanese' : name;
+  const font = `${size}px 'Lyric-${family}'`;
+  // Canvas does not initiate font downloads itself. Load on demand; the animation
+  // loop repaints with the selected font as soon as it becomes available.
+  if (!document.fonts.check(font, text || ' ')) document.fonts.load(font, text || ' ');
+  return font;
+}
 
 async function loadLyrics(stem) {
   try {
@@ -159,6 +230,7 @@ async function loadLyrics(stem) {
     lyrics = r.ok ? await r.json() : [];
     // ensure every lyric has an id
     lyrics.forEach(l => { if (!l.id) l.id = uid(); });
+    undoStack.length = 0; redoStack.length = 0; formEdit = null;
     renderList();
     renderTimeline();
     selectLyric(null);
@@ -237,26 +309,53 @@ function buildTimeline() {
 
 function renderTimeline() {
   tlTrack.innerHTML = '';
-  const COLORS = ['#4466cc','#cc4466','#44aa66','#cc8844','#9944cc','#44aacc'];
-  lyrics.forEach((lyric, i) => {
+  // Freeze the layout during a gesture; repack only when the mouse is released.
+  if (!tlDrag) {
+    timelineLanes = new Map();
+    const occupied = [];
+    const hasLane = l => Number.isInteger(l.lane) && l.lane >= 0 && l.lane <= 100;
+    for (const lyric of [...lyrics].sort((a, b) => Number(hasLane(b)) - Number(hasLane(a)) || a.start - b.start || a.end - b.end)) {
+      const left = lyric.start * PX_PER_SEC;
+      const right = left + Math.max(16, (lyric.end - lyric.start) * PX_PER_SEC);
+      const fits = lane => !(occupied[lane] || []).some(([a, b]) => left < b + 4 && right + 4 > a);
+      let lane = hasLane(lyric) && fits(lyric.lane) ? lyric.lane : 0;
+      while (!fits(lane)) lane++;
+      (occupied[lane] ||= []).push([left, right]);
+      timelineLanes.set(lyric.id, lane);
+    }
+  }
+  const laneCount = Math.max(1, ...Array.from(timelineLanes.values(), lane => lane + 1));
+  const trackHeight = (laneCount + 1) * LANE_HEIGHT + 12;
+  tlTrack.style.height = trackHeight + 'px';
+  tlInner.style.height = (trackHeight + 24) + 'px';
+  tlWrap.style.height = (trackHeight + 24 + 16) + 'px';
+  lyrics.forEach(lyric => {
     const block = document.createElement('div');
     block.className = 'tl-block' + (lyric.id === selectedId ? ' selected' : '');
     block.dataset.id = lyric.id;
+    block.style.top = (6 + (timelineLanes.get(lyric.id) || 0) * LANE_HEIGHT) + 'px';
     block.style.left  = (lyric.start * PX_PER_SEC) + 'px';
-    block.style.width = Math.max(4, (lyric.end - lyric.start) * PX_PER_SEC) + 'px';
+    block.style.width = Math.max(16, (lyric.end - lyric.start) * PX_PER_SEC) + 'px';
     block.style.background = rgbToHex(lyric.color) + 'bb';
     block.textContent = lyric.text || '…';
+    block.title = `${lyric.text || 'Empty lyric'} (${lyric.start.toFixed(2)}s – ${lyric.end.toFixed(2)}s)`;
     block.addEventListener('mousedown', e => {
       e.preventDefault();
       e.stopPropagation();
       selectLyric(lyric.id);
+      const before = snapshot();
       const blockRect = block.getBoundingClientRect();
       const distLeft  = e.clientX - blockRect.left;
       const distRight = blockRect.right - e.clientX;
       const edgeZone  = Math.min(8, blockRect.width * 0.25);
       const mode = distLeft < edgeZone ? 'start' : distRight < edgeZone ? 'end' : 'move';
-      tlDrag = { id: lyric.id, mode, startX: e.clientX, origStart: lyric.start, origEnd: lyric.end };
-      if (mode === 'move') video.currentTime = lyric.start;
+      tlDrag = { id: lyric.id, mode, startX: e.clientX, startY: e.clientY,
+        origLane: timelineLanes.get(lyric.id) || 0, origStart: lyric.start, origEnd: lyric.end, before };
+      if (mode === 'move') {
+        // The fade is invisible at the start; preview the selected lyric at its midpoint.
+        video.currentTime = (lyric.start + lyric.end) / 2;
+        updatePlayhead();
+      }
     });
     block.addEventListener('mousemove', e => {
       if (tlDrag) return;
@@ -365,9 +464,27 @@ function updateExportPreview() {
 }
 video.addEventListener('loadedmetadata', updateExportPreview);
 
-function drawScribbleText(x, y, text, size, color, tick, fade, haloSize = 4, haloIntensity = .75) {
+function lyricLines(text) {
+  return text.replace(/\\n/g, '\n').replace(/\r\n?/g, '\n').split('\n');
+}
+
+// Shared geometry for text, its backdrop, and picking any line while dragging.
+function lyricTextLayout(text, size, x, y) {
+  const lines = lyricLines(text);
+  const positioned = lines.map((line, i) => ({text: line, x, y: y + (i - (lines.length - 1) / 2) * size * 1.2}));
+  const boxes = positioned.filter(line => line.text).map(line => {
+    const m = ctx.measureText(line.text);
+    return {left: x - m.actualBoundingBoxLeft, right: x + m.actualBoundingBoxRight,
+      top: line.y - m.actualBoundingBoxAscent, bottom: line.y + m.actualBoundingBoxDescent};
+  });
+  return {lines: positioned, left: Math.min(x, ...boxes.map(b => b.left)),
+    right: Math.max(x, ...boxes.map(b => b.right)), top: Math.min(y, ...boxes.map(b => b.top)),
+    bottom: Math.max(y, ...boxes.map(b => b.bottom))};
+}
+
+function drawScribbleText(x, y, text, size, color, tick, fade, haloSize = 4, haloIntensity = .75, font = 'auto') {
   ctx.save();
-  ctx.font = `${size}px 'DejaVu Sans', sans-serif`;
+  ctx.font = lyricFont(size, text, font);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = color;
   ctx.shadowColor = `rgba(0,0,0,${haloIntensity})`;
@@ -376,9 +493,12 @@ function drawScribbleText(x, y, text, size, color, tick, fade, haloSize = 4, hal
   ctx.strokeStyle = `rgba(0,0,0,${haloIntensity})`;
   ctx.lineWidth = 2 * Math.max(1, Math.round(size / 36));
   ctx.lineJoin = 'round';
-  ctx.strokeText(text, x, y);
+  const layout = lyricTextLayout(text, size, x, y);
+  if (haloIntensity > 0) {
+    for (const line of layout.lines) ctx.strokeText(line.text, line.x, line.y);
+  }
   ctx.shadowColor = 'transparent';
-  ctx.fillText(text, x, y);
+  for (const line of layout.lines) ctx.fillText(line.text, line.x, line.y);
   ctx.restore();
 }
 
@@ -388,13 +508,13 @@ function drawLyricBackground(lyric, x, y) {
   const padding = lyric.background_padding ?? 16;
   const softness = lyric.background_softness ?? 24;
   ctx.save();
-  ctx.font = `${lyric.size}px 'DejaVu Sans', sans-serif`;
+  ctx.font = lyricFont(lyric.size, lyric.text, lyric.font);
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  const metrics = ctx.measureText(lyric.text);
-  const left = x - metrics.actualBoundingBoxLeft - padding - softness;
-  const top = y - metrics.actualBoundingBoxAscent - padding - softness;
-  const width = metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight + 2 * (padding + softness);
-  const height = metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent + 2 * (padding + softness);
+  const layout = lyricTextLayout(lyric.text, lyric.size, x, y);
+  const left = layout.left - padding - softness;
+  const top = layout.top - padding - softness;
+  const width = layout.right - layout.left + 2 * (padding + softness);
+  const height = layout.bottom - layout.top + 2 * (padding + softness);
   const backdrop = document.createElement('canvas');
   backdrop.width = Math.ceil(width); backdrop.height = Math.ceil(height);
   const bg = backdrop.getContext('2d');
@@ -483,14 +603,41 @@ function drawOverlay() {
       lyric.text, lyric.size,
       rgbToHex(lyric.color),
       jitterTick, lyric.fade ?? 0.25, lyric.halo_size ?? 4, lyric.halo_intensity ?? .75,
+      lyric.font ?? 'auto',
     );
   }
 
   ctx.restore();
   ctx.globalAlpha = 1;
+  drawCenterGuides();
   // Advance jitter at ~10hz to match Python's per-3-frame seed stepping
   const now = performance.now();
   if (now - lastJitterUpdate > 100) { jitterTick++; lastJitterUpdate = now; }
+}
+
+function drawCenterGuides() {
+  if (!canvasDrag) return;
+  const rect = overlay.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const w = overlay.width, h = overlay.height;
+  const scale = w / rect.width;
+  ctx.save();
+  ctx.lineWidth = scale;
+  for (const axis of ['x', 'y']) {
+    const snapped = canvasDrag[axis === 'x' ? 'snapX' : 'snapY'];
+    ctx.strokeStyle = snapped ? '#55d9ff' : 'rgba(255,255,255,.45)';
+    ctx.setLineDash(snapped ? [] : [6 * scale, 6 * scale]);
+    ctx.beginPath();
+    ctx.moveTo(axis === 'x' ? w / 2 : 0, axis === 'y' ? h / 2 : 0);
+    ctx.lineTo(axis === 'x' ? w / 2 : w, axis === 'y' ? h / 2 : h);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// Use screen pixels so snapping feels the same at every preview size.
+function snapToCenter(value, pixelsPerUnit, disabled) {
+  return !disabled && Math.abs(value - 0.5) * pixelsPerUnit <= 8 ? 0.5 : value;
 }
 
 function rafLoop() {
@@ -501,7 +648,6 @@ rafLoop();
 
 // ── Spatial drag on canvas ─────────────────────────────────────────────────
 
-let canvasDrag = null; // {id, ox, oy} — offset in normalised units at drag start
 let tlDrag     = null; // {id, mode, startX, origStart, origEnd}
 
 function findLyricAt(nx, ny) {
@@ -511,9 +657,13 @@ function findLyricAt(nx, ny) {
   for (let i = lyrics.length - 1; i >= 0; i--) {
     const l = lyrics[i];
     if (!l.text || t < l.start || t >= l.end) continue;
-    const halfW = (l.text.length * l.size * 0.55 / 2 + 10) / vw;
-    const halfH = (l.size * 0.75 + 8) / vh;
-    if (Math.abs(nx - l.x) < halfW && Math.abs(ny - l.y) < halfH) return l;
+    ctx.save();
+    ctx.font = lyricFont(l.size, l.text, l.font);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const box = lyricTextLayout(l.text, l.size, l.x * vw, l.y * vh);
+    ctx.restore();
+    if (nx * vw >= box.left - 10 && nx * vw <= box.right + 10 &&
+        ny * vh >= box.top - 8 && ny * vh <= box.bottom + 8) return l;
   }
   return null;
 }
@@ -524,7 +674,7 @@ overlay.addEventListener('mousedown', e => {
   if (!hit) { selectLyric(null); return; }
   e.preventDefault();
   selectLyric(hit.id);
-  canvasDrag = { id: hit.id, ox: nx - hit.x, oy: ny - hit.y };
+  canvasDrag = { id: hit.id, ox: nx - hit.x, oy: ny - hit.y, before: snapshot() };
   overlay.style.cursor = 'grabbing';
 });
 
@@ -533,8 +683,12 @@ document.addEventListener('mousemove', e => {
   if (canvasDrag) {
     const lyric = getLyric(canvasDrag.id);
     if (!lyric) return;
-    lyric.x = Math.max(0, Math.min(1, nx - canvasDrag.ox));
-    lyric.y = Math.max(0, Math.min(1, ny - canvasDrag.oy));
+    const rect = overlay.getBoundingClientRect();
+    const bounds = exportAspect === 'original' ? reelsVideoBounds() : {width: 1080, height: 1920};
+    lyric.x = snapToCenter(Math.max(0, Math.min(1, nx - canvasDrag.ox)), rect.width * 1080 / bounds.width, e.altKey);
+    lyric.y = snapToCenter(Math.max(0, Math.min(1, ny - canvasDrag.oy)), rect.height * 1920 / bounds.height, e.altKey);
+    canvasDrag.snapX = lyric.x === 0.5;
+    canvasDrag.snapY = lyric.y === 0.5;
     populateForm(lyric);
   } else {
     overlay.style.cursor = findLyricAt(nx, ny) ? 'grab' : 'default';
@@ -549,6 +703,12 @@ document.addEventListener('mousemove', e => {
   if (!lyric) return;
   const dt = (e.clientX - tlDrag.startX) / PX_PER_SEC;
   if (tlDrag.mode === 'move') {
+    const laneDelta = Math.round((e.clientY - tlDrag.startY) / LANE_HEIGHT);
+    if (laneDelta !== 0 || tlDrag.laneChanged) {
+      lyric.lane = Math.max(0, Math.min(100, tlDrag.origLane + laneDelta));
+      timelineLanes.set(lyric.id, lyric.lane);
+      tlDrag.laneChanged = true;
+    }
     const dur = tlDrag.origEnd - tlDrag.origStart;
     lyric.start = parseFloat(Math.max(0, tlDrag.origStart + dt).toFixed(2));
     lyric.end   = parseFloat((lyric.start + dur).toFixed(2));
@@ -563,13 +723,25 @@ document.addEventListener('mousemove', e => {
 
 document.addEventListener('mouseup', () => {
   if (canvasDrag) {
+    rememberEdit(canvasDrag.before);
     renderList();
     canvasDrag = null;
     overlay.style.cursor = 'default';
   }
   if (tlDrag) {
+    const moved = getLyric(tlDrag.id);
+    if (tlDrag.laneChanged && moved) {
+      // Give the dropped bar its requested row; overlapping bars find a free row.
+      for (const other of lyrics) {
+        if (other.id !== moved.id && other.lane === moved.lane &&
+            other.start * PX_PER_SEC < moved.start * PX_PER_SEC + Math.max(16, (moved.end - moved.start) * PX_PER_SEC) + 4 &&
+            moved.start * PX_PER_SEC < other.start * PX_PER_SEC + Math.max(16, (other.end - other.start) * PX_PER_SEC) + 4) delete other.lane;
+      }
+    }
+    rememberEdit(tlDrag.before);
     renderList();
     tlDrag = null;
+    renderTimeline();
   }
 });
 
@@ -582,6 +754,11 @@ function isInputFocused() {
 
 document.addEventListener('keydown', e => {
   if (document.getElementById('export-dialog').open) return;
+  if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
+    e.preventDefault();
+    restoreHistory(e.shiftKey || e.key.toLowerCase() === 'y');
+    return;
+  }
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
     e.preventDefault();
     saveLyrics();
@@ -606,9 +783,12 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     if (!selectedId) return;
     const lyric = getLyric(selectedId);
+    finishFormEdit();
+    const before = snapshot();
     lyric.start = parseFloat(video.currentTime.toFixed(2));
     if (lyric.end <= lyric.start) lyric.end = parseFloat((lyric.start + 3).toFixed(2));
     populateForm(lyric); renderList(); renderTimeline();
+    rememberEdit(before);
     return;
   }
 
@@ -616,9 +796,12 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     if (!selectedId) return;
     const lyric = getLyric(selectedId);
+    finishFormEdit();
+    const before = snapshot();
     lyric.end = parseFloat(video.currentTime.toFixed(2));
     if (lyric.end <= lyric.start) lyric.start = Math.max(0, parseFloat((lyric.end - 1).toFixed(2)));
     populateForm(lyric); renderList(); renderTimeline();
+    rememberEdit(before);
     return;
   }
 
@@ -646,6 +829,9 @@ document.addEventListener('keydown', e => {
 // ── Toolbar actions ────────────────────────────────────────────────────────
 
 document.getElementById('add-btn').addEventListener('click', addLyric);
+document.getElementById('duplicate-btn').addEventListener('click', duplicateLyric);
+document.getElementById('undo-btn').addEventListener('click', () => restoreHistory());
+document.getElementById('redo-btn').addEventListener('click', () => restoreHistory(true));
 document.getElementById('save-btn').addEventListener('click', saveLyrics);
 document.getElementById('set-start-btn').addEventListener('click', () => {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: '[' }));

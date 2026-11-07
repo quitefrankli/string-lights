@@ -124,7 +124,7 @@ def _do_render(stem: str, aspect: str = "padded", export_format: str = "source_a
 
 
 def create_lyrics_app(filename: str | None = None) -> Flask:
-    from .lyrics import load_lyrics, save_lyrics
+    from .lyrics import FONT_OPTIONS, font_path, load_lyrics, save_lyrics
 
     app = Flask(__name__)
 
@@ -162,7 +162,16 @@ def create_lyrics_app(filename: str | None = None) -> Flask:
 
     @app.route("/")
     def index():
-        return render_template("lyrics_editor.html", config={"stem": stem_name})
+        return render_template("lyrics_editor.html", config={"stem": stem_name}, fonts=FONT_OPTIONS)
+
+    @app.get("/fonts/<font_id>")
+    def lyric_font(font_id):
+        if font_id not in FONT_OPTIONS:
+            return "Not found", 404
+        target = font_path(font_id, request.args.get("japanese") == "1")
+        if target is None:
+            return "Not found", 404
+        return send_from_directory(target.parent, target.name)
 
     @app.route("/video/<stem>")
     def video(stem):
@@ -186,6 +195,8 @@ def create_lyrics_app(filename: str | None = None) -> Flask:
         for item in values:
             if not isinstance(item, dict) or not isinstance(item.get("text"), str):
                 return jsonify(error="Invalid lyric text"), 400
+            if not isinstance(item.get("font", "auto"), str) or item.get("font", "auto") not in FONT_OPTIONS:
+                return jsonify(error="Invalid lyric font"), 400
             for key in ("start", "end", "x", "y", "size", "fade"):
                 value = item.get(key, {"x": .5, "y": .85, "size": 48, "fade": .25}.get(key))
                 if not isinstance(value, (int, float)) or not np.isfinite(value):

@@ -10,7 +10,7 @@ try:
 except ImportError:
     _PIL = False
 
-_FONT_CACHE: dict[tuple[int, bool], any] = {}
+_FONT_CACHE: dict[tuple[int, bool, str], any] = {}
 _JAPANESE_FONT_PATHS = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf",
@@ -21,6 +21,19 @@ _FONT_PATHS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 ]
+FONT_OPTIONS = {
+    "auto": ("Default (Quicksand)", _FONT_PATHS),
+    "sans": ("Sans serif", ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]),
+    "serif": ("Serif", ["/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"]),
+    "mono": ("Monospace", ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"]),
+}
+
+
+def font_path(name: str = "auto", japanese: bool = False) -> Path | None:
+    candidates = FONT_OPTIONS.get(name, FONT_OPTIONS["auto"])[1]
+    if japanese:
+        candidates = _JAPANESE_FONT_PATHS + candidates
+    return next((Path(path) for path in candidates + _FONT_PATHS if Path(path).is_file()), None)
 
 
 def lyrics_path(stem: str) -> Path:
@@ -39,16 +52,15 @@ def save_lyrics(stem: str, lyrics: list[dict]) -> None:
     p.write_text(json.dumps(lyrics, indent=2))
 
 
-def _font(size: int, text: str = ""):
+def _font(size: int, text: str = "", name: str = "auto"):
     japanese = any("\u3040" <= char <= "\u30ff" or "\u3400" <= char <= "\u9fff" for char in text)
-    key = (size, japanese)
+    key = (size, japanese, name)
     if key not in _FONT_CACHE:
         f = None
-        paths = _JAPANESE_FONT_PATHS + _FONT_PATHS if japanese else _FONT_PATHS
-        for path in paths:
+        path = font_path(name, japanese)
+        if path is not None:
             try:
                 f = ImageFont.truetype(path, size)
-                break
             except (IOError, OSError):
                 pass
         _FONT_CACHE[key] = f or ImageFont.load_default()
@@ -61,13 +73,25 @@ def _font(size: int, text: str = ""):
 @lru_cache(maxsize=32)
 def _lyric_overlay(w: int, h: int, style: tuple):
     (text, x, y, size, color, opacity, padding, softness,
-     halo_size, halo_intensity) = style
-    font = _font(size, text)
+     halo_size, halo_intensity, font_name) = style
+    font = _font(size, text, font_name)
     outline = max(1, round(size / 36))
     intensity = round(255 * halo_intensity)
     draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    bounds = draw.textbbox((x, y), text, font=font, anchor="mm")
-    text_bounds = draw.textbbox((x, y), text, font=font, anchor="mm", stroke_width=outline)
+    lines = text.replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    positions = [(line, x, y + (i - (len(lines) - 1) / 2) * size * 1.2)
+                 for i, line in enumerate(lines) if line]
+    if not positions:
+        return None
+
+    def combined_bounds(stroke_width=0):
+        boxes = [draw.textbbox((lx, ly), line, font=font, anchor="mm", stroke_width=stroke_width)
+                 for line, lx, ly in positions]
+        return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+                max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+    bounds = combined_bounds()
+    text_bounds = combined_bounds(outline)
     shadow_offset = max(1, size / 24)
     # Pillow's Gaussian approximation has finite support. Leave extra transparent
     # pixels around it so cropping does not introduce a visible boundary.
@@ -80,7 +104,6 @@ def _lyric_overlay(w: int, h: int, style: tuple):
     if right <= left or bottom <= top:
         return None
     shape = (right - left, bottom - top)
-    position = (x - left, y - top)
     backdrop = None
     background_alpha = None
     if opacity > 0:
@@ -105,16 +128,18 @@ def _lyric_overlay(w: int, h: int, style: tuple):
         backdrop.putalpha(Image.fromarray(np.rint(background_alpha).astype(np.uint8)))
     layer = Image.new("RGBA", shape)
     if intensity:
-        ImageDraw.Draw(layer).text(
-            (position[0], position[1] + shadow_offset), text, font=font,
-            anchor="mm", fill=(0, 0, 0, intensity), stroke_width=outline,
-            stroke_fill=(0, 0, 0, intensity),
-        )
+        for line, lx, ly in positions:
+            ImageDraw.Draw(layer).text(
+                (lx - left, ly - top + shadow_offset), line, font=font,
+                anchor="mm", fill=(0, 0, 0, intensity), stroke_width=outline,
+                stroke_fill=(0, 0, 0, intensity),
+            )
         layer = layer.filter(ImageFilter.GaussianBlur(halo_size))
-    ImageDraw.Draw(layer).text(
-        position, text, font=font, anchor="mm", fill=(*color, 255),
-        stroke_width=outline, stroke_fill=(0, 0, 0, intensity),
-    )
+    for line, lx, ly in positions:
+        ImageDraw.Draw(layer).text(
+            (lx - left, ly - top), line, font=font, anchor="mm", fill=(*color, 255),
+            stroke_width=outline, stroke_fill=(0, 0, 0, intensity),
+        )
     return (left, top, right, bottom), backdrop, background_alpha, layer
 
 
@@ -134,6 +159,7 @@ def draw_lyrics_frame(frame: np.ndarray, frame_idx: int, fps: float, lyrics: lis
             lyric.get("background_opacity", 0), lyric.get("background_padding", 16),
             lyric.get("background_softness", 24), lyric.get("halo_size", 4),
             lyric.get("halo_intensity", .75),
+            lyric.get("font", "auto"),
         )
         overlay = _lyric_overlay(w, h, style)
         if overlay is None:
